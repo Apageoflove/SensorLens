@@ -31,7 +31,7 @@ svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width:
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* ---------- 侧栏 ---------- */
-#side { width: 292px; flex: none; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line);
+#side { width: var(--side-w, 292px); flex: none; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line);
         display: flex; flex-direction: column; scrollbar-gutter: stable; }
 .brand { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 16px;
          background: var(--panel); border-bottom: 1px solid var(--line); flex: none; }
@@ -235,9 +235,16 @@ tr:hover td { background: var(--raised); }
 tr.clickable { cursor: pointer; } tr.clickable:hover td { background: #212a35; }
 code { font: 11.5px var(--mono); color: var(--text); }
 
-body.side-collapsed #side { display: none; }
+body.side-collapsed #side, body.side-collapsed #sideResizer { display: none; }
+/* 侧栏右边缘的拖动条：可见宽度 1px（即侧栏边框），可抓取范围 7px */
+#sideResizer { flex: none; width: 7px; margin: 0 -4px 0 -3px; position: relative; z-index: 3; cursor: col-resize; touch-action: none; }
+#sideResizer::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 3px; background: transparent; transition: background .12s; }
+#sideResizer:hover::after, #sideResizer.drag::after, #sideResizer:focus-visible::after { background: var(--accent); }
+#sideResizer:focus-visible { outline: none; }
+body.side-resizing { cursor: col-resize; user-select: none; }
+body.side-resizing iframe, body.side-resizing canvas, body.side-resizing img { pointer-events: none; }
 @media (max-width: 900px) {
-  #side { width: 252px; }
+  #side { width: var(--side-w, 252px); }
   .row > label { width: 52px; }
   .keys { display: none; }
 }

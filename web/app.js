@@ -873,6 +873,50 @@ for (const r of document.querySelectorAll('input[type=range]')) {
   r.addEventListener("input", () => paintRange(r));
 }
 
+// 拖动侧栏右边缘调整宽度；双击恢复默认；键盘左右方向键微调
+{
+  const MIN = 220, KEY = "sensorlens.sideWidth", bar = $("#sideResizer"), side = $("#side");
+  const max = () => Math.max(MIN, Math.min(640, window.innerWidth - 420));
+  let raf = 0;
+  const notify = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => window.dispatchEvent(new Event("resize"))); };
+  const apply = (w, save = true) => {
+    if (w == null) document.documentElement.style.removeProperty("--side-w");
+    else document.documentElement.style.setProperty("--side-w", Math.round(Math.min(max(), Math.max(MIN, w))) + "px");
+    if (save) {
+      if (w == null) localStorage.removeItem(KEY);
+      else localStorage.setItem(KEY, String(side.getBoundingClientRect().width));
+    }
+    notify();
+  };
+  const saved = +localStorage.getItem(KEY);
+  if (saved) apply(saved, false);
+  bar.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    bar.setPointerCapture(e.pointerId);
+    const x0 = e.clientX, w0 = side.getBoundingClientRect().width;
+    bar.classList.add("drag"); document.body.classList.add("side-resizing");
+    const move = (ev) => apply(w0 + ev.clientX - x0, false);
+    const up = () => {
+      bar.removeEventListener("pointermove", move);
+      bar.classList.remove("drag"); document.body.classList.remove("side-resizing");
+      apply(side.getBoundingClientRect().width);
+    };
+    bar.addEventListener("pointermove", move);
+    bar.addEventListener("pointerup", up, { once: true });
+    bar.addEventListener("pointercancel", up, { once: true });
+  });
+  bar.addEventListener("dblclick", () => apply(null));
+  bar.addEventListener("keydown", (e) => {
+    const d = { ArrowLeft: -16, ArrowRight: 16 }[e.key];
+    if (d) { e.preventDefault(); apply(side.getBoundingClientRect().width + d); }
+  });
+  // 窗口变小时侧栏不能把主区挤没
+  window.addEventListener("resize", () => {
+    if (side.getBoundingClientRect().width > max() + 1) document.documentElement.style.setProperty("--side-w", max() + "px");
+  });
+}
+
 $("#sideToggle").onclick = () => {
   document.body.classList.toggle("side-collapsed");
   localStorage.setItem("sensorlens.side", document.body.classList.contains("side-collapsed") ? "0" : "1");
