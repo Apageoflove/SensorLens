@@ -8,3 +8,4 @@ real_samples/
 *.key
 *.key.pub
 .env
+env.local.ps1

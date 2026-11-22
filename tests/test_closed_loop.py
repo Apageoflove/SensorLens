@@ -9,13 +9,13 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from adviz import autocalib
-from adviz.dataset import open_dataset
-from adviz.export import ExportJob
-from adviz.geometry import make_T
-from adviz.integrity import ImageCorrupt, image_problem
-from adviz.plan import viz_plan
-from adviz.render import overlay, render_png
+from sensorlens import autocalib
+from sensorlens.dataset import open_dataset
+from sensorlens.export import ExportJob
+from sensorlens.geometry import make_T
+from sensorlens.integrity import ImageCorrupt, image_problem
+from sensorlens.plan import viz_plan
+from sensorlens.render import overlay, render_png
 
 
 def _jpeg(color=(90, 120, 150), size=(64, 48)) -> bytes:
@@ -160,10 +160,10 @@ def test_export_skips_corrupt_image(tmp_path):
 
 
 def test_server_export_and_corrupt_image(tmp_path, monkeypatch, demo_root):
-    monkeypatch.setenv("ADVIZ_DATA", str(tmp_path / "srv"))
+    monkeypatch.setenv("SENSORLENS_DATA", str(tmp_path / "srv"))
     import importlib
 
-    import adviz.server as server
+    import sensorlens.server as server
     importlib.reload(server)
     from fastapi.testclient import TestClient
     c = TestClient(server.app)

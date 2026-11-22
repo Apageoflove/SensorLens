@@ -6,12 +6,12 @@ import zipfile
 import numpy as np
 import pytest
 
-from adviz.camera import Camera
-from adviz.categories import Categories
-from adviz.dataset import CompositeStore, Dataset, ZipStore, parse_frame_spec
-from adviz.geometry import euler_to_rot, make_T
-from adviz.render import Timing, project_polyline
-from adviz.schema import DEFAULT_CONVENTIONS, SchemaError, merge_conventions, parse_frame, parse_intrinsic
+from sensorlens.camera import Camera
+from sensorlens.categories import Categories
+from sensorlens.dataset import CompositeStore, Dataset, ZipStore, parse_frame_spec
+from sensorlens.geometry import euler_to_rot, make_T
+from sensorlens.render import Timing, project_polyline
+from sensorlens.schema import DEFAULT_CONVENTIONS, SchemaError, merge_conventions, parse_frame, parse_intrinsic
 
 K = [[500, 0, 500], [0, 500, 500], [0, 0, 1]]
 
@@ -60,7 +60,7 @@ def test_custom_root_frame_with_sync_falls_back_to_static():
 
     class DS:
         def trajectory(self, seq):
-            from adviz.motion import Trajectory
+            from sensorlens.motion import Trajectory
             return Trajectory([])
 
     assert np.allclose(Timing(DS(), f).T("cam", "lid")[:3, 3], [0, 0, 1])
@@ -114,23 +114,23 @@ def test_zips_with_same_layout_both_kept(tmp_path):
 
 
 def test_adapter_wildcard_missing():
-    from adviz.adapter import _eval, detect
+    from sensorlens.adapter import _eval, detect
     assert not detect({"x": 1}, {"detect": ["nothing[*].v"]})
     assert _eval({"a": []}, None, ["a[*].v", "=fb"], {}) == "fb"
 
 
 def test_cli_safe_name():
-    from adviz.cli import _safe_name
+    from sensorlens.cli import _safe_name
     assert _safe_name('a:b/c\\d*?"<>|. ') == "a_b_c_d______"
 
 
 def test_upload_many_files_and_delete(tmp_path, monkeypatch):
-    monkeypatch.setenv("ADVIZ_DATA", str(tmp_path))
+    monkeypatch.setenv("SENSORLENS_DATA", str(tmp_path))
     import importlib
 
     from fastapi.testclient import TestClient
 
-    import adviz.server as server
+    import sensorlens.server as server
     importlib.reload(server)
     c = TestClient(server.app)
     files = [("files", (f"junk/{i}.txt", b"x")) for i in range(1100)]

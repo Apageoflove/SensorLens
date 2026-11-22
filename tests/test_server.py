@@ -7,10 +7,10 @@ from fastapi.testclient import TestClient
 @pytest.fixture(scope="module")
 def client(tmp_path_factory, monkeypatch_module):
     data = tmp_path_factory.mktemp("srvdata")
-    monkeypatch_module.setenv("ADVIZ_DATA", str(data))
+    monkeypatch_module.setenv("SENSORLENS_DATA", str(data))
     import importlib
 
-    import adviz.server as server
+    import sensorlens.server as server
     importlib.reload(server)
     return TestClient(server.app)
 

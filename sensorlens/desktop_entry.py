@@ -1,7 +1,7 @@
 """桌面版后端入口。
 
-adviz-backend serve --port 8765 --data <数据目录>   启动服务（桌面外壳调用）
-adviz-backend cli render <输入> --out <目录>        批量命令行，同 python -m adviz.cli
+sensorlens-backend serve --port 8765 --data <数据目录>   启动服务（桌面外壳调用）
+sensorlens-backend cli render <输入> --out <目录>        批量命令行，同 python -m sensorlens.cli
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def _watch_stdin() -> None:
 
 
 def serve(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(prog="adviz-backend serve")
+    ap = argparse.ArgumentParser(prog="sensorlens-backend serve")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--data", required=True, help="数据目录（会话、缓存、日志）")
@@ -51,8 +51,8 @@ def serve(argv: list[str]) -> int:
     a = ap.parse_args(argv)
     data = Path(a.data).resolve()
     data.mkdir(parents=True, exist_ok=True)
-    os.environ["ADVIZ_DATA"] = str(data)
-    os.environ.setdefault("ADVIZ_RES", str(_resources()))
+    os.environ["SENSORLENS_DATA"] = str(data)
+    os.environ.setdefault("SENSORLENS_RES", str(_resources()))
     tmp = data / "tmp"
     tmp.mkdir(exist_ok=True)
     for k in ("TEMP", "TMP", "TMPDIR"):
@@ -61,8 +61,8 @@ def serve(argv: list[str]) -> int:
         _watch_stdin()
     import uvicorn
 
-    from adviz.server import app
-    print(f"ad-viz backend on http://{a.host}:{a.port}", flush=True)
+    from sensorlens.server import app
+    print(f"SensorLens backend on http://{a.host}:{a.port}", flush=True)
     uvicorn.run(app, host=a.host, port=a.port, log_level="warning", access_log=False)
     return 0
 
@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     multiprocessing.freeze_support()
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "cli":
-        from adviz.cli import main as cli_main
+        from sensorlens.cli import main as cli_main
         return cli_main(argv[1:])
     if argv and argv[0] == "serve":
         argv = argv[1:]

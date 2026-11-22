@@ -5,16 +5,16 @@ import shutil
 import numpy as np
 import pytest
 
-from adviz import dataset as dsmod
-from adviz import demo
-from adviz.calibcheck import check_camera
-from adviz.categories import Categories
-from adviz.dataset import open_dataset
-from adviz.geometry import euler_to_rot, make_T
-from adviz.motion import Trajectory, guess_point_times, interp_T
-from adviz.pointcloud import load_points_ex, lzf_compress_literal, lzf_decompress, write_pcd
-from adviz.render import overlay, render_png, stitch
-from adviz.schema import parse_frame
+from sensorlens import dataset as dsmod
+from sensorlens import demo
+from sensorlens.calibcheck import check_camera
+from sensorlens.categories import Categories
+from sensorlens.dataset import open_dataset
+from sensorlens.geometry import euler_to_rot, make_T
+from sensorlens.motion import Trajectory, guess_point_times, interp_T
+from sensorlens.pointcloud import load_points_ex, lzf_compress_literal, lzf_decompress, write_pcd
+from sensorlens.render import overlay, render_png, stitch
+from sensorlens.schema import parse_frame
 
 
 @pytest.mark.parametrize("label,group", [("Car", "vehicle_4w"), ("vehicle.truck", "vehicle_4w"), ("公交车", "vehicle_4w"),

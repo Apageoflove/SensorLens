@@ -3,11 +3,11 @@ import copy
 import numpy as np
 import pytest
 
-from adviz import demo
-from adviz.calibcheck import check_camera
-from adviz.geometry import inv_T, transform_points
-from adviz.render import Timing, lidar_points, overlay, project_polyline, render_png, stitch
-from adviz.schema import parse_frame
+from sensorlens import demo
+from sensorlens.calibcheck import check_camera
+from sensorlens.geometry import inv_T, transform_points
+from sensorlens.render import Timing, lidar_points, overlay, project_polyline, render_png, stitch
+from sensorlens.schema import parse_frame
 
 
 def test_dataset_index(demo_ds):

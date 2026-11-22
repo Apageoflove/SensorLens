@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ad-viz</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%231c1c1c'/%3E%3Cpath d='M3 12L8 3l5 9' stroke='%23d9a441' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+<title>SensorLens</title>
+<link rel="icon" type="image/png" href="/static/icon.png">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <aside id="side">
   <header class="brand">
-    <span class="wordmark">ad-viz</span>
+    <img class="logo" src="/static/icon.png" alt=""><span class="wordmark">SensorLens</span>
     <span class="brand-sub">相机 · 雷达 · 标注</span>
   </header>
 
@@ -34,7 +34,7 @@
     </div>
     <div id="srcLocal" hidden>
       <div class="row path-row">
-        <input id="localPath" placeholder="例如 E:\data\nuscenes" spellcheck="false">
+        <input id="localPath" placeholder="数据所在文件夹的完整路径" spellcheck="false">
         <button id="btnBrowse" hidden>浏览…</button>
       </div>
       <p class="hint">原地读取，不复制文件，适合几十 GB 的数据。支持目录、zip、单个 json，以及 nuScenes 数据根目录（含 v1.0-*）。</p>
@@ -103,7 +103,7 @@
   <section id="secExport" class="needs-data">
     <h2>导出可视化</h2>
     <div class="row path-row">
-      <input id="exportDir" placeholder="导出到，例如 E:\out\viz" spellcheck="false">
+      <input id="exportDir" placeholder="导出到的文件夹（完整路径）" spellcheck="false">
       <button id="btnExportBrowse" hidden>浏览…</button>
     </div>
     <div class="row"><label>范围</label>

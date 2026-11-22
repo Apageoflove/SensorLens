@@ -1,6 +1,6 @@
 import numpy as np
 
-from adviz.camera import Camera
+from sensorlens.camera import Camera
 
 K = [[100, 0, 50], [0, 120, 40], [0, 0, 1]]
 

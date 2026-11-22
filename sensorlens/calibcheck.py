@@ -288,8 +288,10 @@ def prepare(ds, frame, cam_name: str, lidar_name: str | None = None, max_points:
                 for a in frame.annotations)
     if lidar_name is not None and lidar_name not in frame.lidars:
         raise KeyError(f"雷达 {lidar_name!r} 不存在，可用: {list(frame.lidars)}")
-    if frame.lidars:
-        lidar_name = lidar_name or next(iter(frame.lidars))
+    if lidar_name is None:
+        # JSON 里写了雷达但点云文件没有上传时，按标注来校验
+        lidar_name = next((n for n in frame.lidars if _has_points(ds, frame, n)), None)
+    if lidar_name is not None:
         method = "lidar"
     elif any(a.kind == "box3d" for a in anns3d) and has2d:
         method = "box_iou"
@@ -298,6 +300,14 @@ def prepare(ds, frame, cam_name: str, lidar_name: str | None = None, max_points:
     else:
         return _unknown(cam_name, "该帧没有点云，也没有 3D 标注，无法检查外参（只能显示 2D 标注）")
     return Evidence(ds, frame, cam_name, lidar_name, method, max_points, sync)
+
+
+def _has_points(ds, frame, name: str) -> bool:
+    try:
+        ds.lidar_name(frame, name)
+        return True
+    except (FileNotFoundError, KeyError):
+        return False
 
 
 def verdict_of(method: str, current: float, best: float, best_is_current: bool) -> str:

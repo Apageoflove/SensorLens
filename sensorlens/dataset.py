@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import posixpath
+import re
 import threading
 import zipfile
 import zlib
@@ -19,13 +21,14 @@ from pathlib import Path
 
 import numpy as np
 
+from . import automap
 from .adapter import apply_adapter, detect, looks_canonical
 from .integrity import ImageChecker, ImageCorrupt, ZipCopies
 from .motion import Trajectory
 from .pointcloud import load_points_ex
-from .schema import Frame, SchemaError, normalize_doc, parse_frame, sensor_names
+from .schema import Frame, SchemaError, iter_named, normalize_doc, parse_frame, sensor_names
 
-INDEX_VERSION = 5
+INDEX_VERSION = 6
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 POINTS_EXT = (".bin", ".pcd", ".ply", ".npy")
 DATA_EXT = IMAGE_EXT + POINTS_EXT + (".json",)
@@ -328,6 +331,10 @@ def _scan(ds: "Dataset", names: list[str]) -> list[dict]:
             continue
         if isinstance(raw, dict) and isinstance(raw.get("extends"), str):
             item["extends"] = ds.resolve(raw["extends"], posixpath.dirname(n))
+        if n in ds.calib_files():
+            item["skipped"].append([n, "只有相机标定，作为同目录各帧的公共标定使用"])
+            out.append(item)
+            continue
         try:
             docs = ds._canonical(n)
         except Exception as e:  # noqa: BLE001 - 单个文件出错不影响整个数据集
@@ -342,6 +349,7 @@ def _scan(ds: "Dataset", names: list[str]) -> list[dict]:
                 item["skipped"].append([label, "没有相机或雷达"])
                 continue
             try:
+                d = ds.with_sizes(d, posixpath.dirname(n), n)
                 f = parse_frame(d, source=n, base_dir=posixpath.dirname(n))
             except (SchemaError, ValueError, TypeError) as e:
                 item["skipped"].append([label, str(e)])
@@ -349,7 +357,7 @@ def _scan(ds: "Dataset", names: list[str]) -> list[dict]:
             fid = str(d.get("frame_id") or (stem if len(docs) == 1 else f"{stem}#{i}"))
             missing = []
             for cam in f.cameras:
-                img = ds.find_image(f, cam)
+                img = ds.find_image(f, cam, n)
                 if img is None:
                     missing.append(cam)
                 else:
@@ -392,6 +400,10 @@ class Dataset:
         self._traj: dict[str, Trajectory] = {}
         self._traj_lock = threading.Lock()
         self.images_checked = ImageChecker(store)
+        self._inferred: dict[str, dict | None] = {}
+        self._infer_lock = threading.Lock()
+        self._calib: dict[str, list[dict]] | None = None
+        self._sizes: dict[str, tuple[int, int]] = {}
         self.skipped: list[tuple[str, str]] = []
         self.index_info: dict = {}
         if index is not None:
@@ -409,6 +421,22 @@ class Dataset:
         copies = copies() if callable(copies) else copies
         if copies is not None and len(copies):
             self.index_info["image_copies"] = copies.describe()
+        if self.virtual is None and self.frames:
+            # 建索引可能在子进程里完成，或者直接读了缓存；这里在本进程里把用到的格式再识别一遍（结果相同）
+            seen = []
+            for r in self.frames:
+                if not r.json_name.startswith("@") and r.json_name not in seen:
+                    seen.append(r.json_name)
+                    if len(seen) >= 4:
+                        break
+            for n in seen:
+                try:
+                    self._canonical(n)
+                except Exception:  # noqa: BLE001
+                    pass
+            fmt = self.inferred_formats()
+            if fmt:
+                self.index_info["inferred_formats"] = fmt
 
     # ---------- 路径解析 ----------
     def resolve(self, path: str, base_dir: str = "") -> str | None:
@@ -446,7 +474,162 @@ class Dataset:
         for spec in self.adapters.values():
             if detect(doc, spec):
                 return spec
-        raise SchemaError("无法识别 JSON 格式：既不是标准格式，也没有匹配的适配器")
+        ad = self._infer(doc)
+        if ad is None:
+            raise SchemaError("无法识别 JSON 格式：没有找到相机、图片路径、点云或标注（可以在 adapters/ 下写一个适配器）")
+        return ad
+
+    # ---------- 未知格式自动识别 ----------
+    INFER_SAMPLE = 8
+    INFER_SCAN = 48
+
+    def _json_names(self) -> list[str]:
+        return [n for n in self.store.names() if n.lower().endswith(".json")]
+
+    def _peek(self, name: str):
+        try:
+            if hasattr(self.store, "size") and self.store.size(name) > MAX_FRAME_JSON:
+                return None
+            return json.loads(self.store.read(name).decode("utf-8-sig"))
+        except (ValueError, UnicodeDecodeError, OSError, KeyError):
+            return None
+
+    def _sample_names(self) -> list[str]:
+        """抽样的 JSON：均匀取一些，再加上名字像标定文件的。结果只取决于文件清单，各进程一致。"""
+        names = self._json_names()
+        step = max(1, len(names) // self.INFER_SCAN)
+        pick = names[::step][:self.INFER_SCAN]
+        calibish = [n for n in names if re.search(r"calib|sensor|param|extrinsic|intrinsic|rig",
+                                                   posixpath.basename(n), re.I)][:16]
+        return list(dict.fromkeys(pick + calibish))
+
+    def _infer(self, doc) -> dict | None:
+        sig = automap.signature(doc)
+        with self._infer_lock:
+            if sig in self._inferred:
+                return self._inferred[sig]
+        same = [doc]
+        for n in self._sample_names():
+            if len(same) > self.INFER_SAMPLE:
+                break
+            d = self._peek(n)
+            if d is not None and d is not doc and automap.signature(d) == sig and d != doc:
+                same.append(d)
+        try:
+            ad = automap.infer(same)
+        except (ValueError, TypeError, KeyError, IndexError) as e:
+            ad = None
+            self.index_info.setdefault("infer_errors", []).append(str(e))
+        with self._infer_lock:
+            self._inferred[sig] = ad
+        return ad
+
+    def calib_files(self) -> set[str]:
+        return set(self._calib_map())
+
+    def _calib_map(self) -> dict[str, list[dict]]:
+        """未知格式里“只有相机标定”的 JSON（文件名 -> 标准格式的相机列表），供同目录 / 上级目录的帧共用。"""
+        if self._calib is not None:
+            return self._calib
+        out: dict[str, list[dict]] = {}
+        if self.adapter_name == "auto" and self.virtual is None:
+            for n in self._sample_names():
+                d = self._peek(n)
+                if d is None or looks_canonical(d) or any(detect(d, a) for a in self.adapters.values()) \
+                        or automap.is_coco(d):
+                    continue
+                ad = self._infer(d)
+                if ad and automap.role(ad) == "calib":
+                    cams = [c for fr in apply_adapter(d, ad) for c in fr.get("cameras", [])]
+                    if cams:
+                        out[n] = cams
+        self._calib = out
+        return out
+
+    def _merge_calib(self, docs: list[dict], name: str) -> list[dict]:
+        cm = self._calib_map()
+        if not cm:
+            return docs
+        d = posixpath.dirname(name)
+        near = None
+        while near is None:
+            hits = [k for k in cm if posixpath.dirname(k) == d]
+            if hits:
+                near = cm[sorted(hits)[0]]
+            elif not d:
+                near = cm[sorted(cm)[0]] if len(cm) == 1 else []
+            else:
+                d = posixpath.dirname(d)
+        if not near:
+            return docs
+        out = []
+        for doc in docs:
+            doc = dict(doc)
+            cams = [dict(c) for c in doc.get("cameras") or []] if isinstance(doc.get("cameras"), list) else None
+            if cams is None:
+                cams = []
+            by = {str(c.get("name")): c for c in near}
+            if not cams:
+                cams = [dict(c) for c in near]
+            else:
+                for c in cams:
+                    base = by.get(str(c.get("name"))) or (near[0] if len(near) == 1 and len(cams) == 1 else None)
+                    if base:
+                        for k, v in base.items():
+                            c.setdefault(k, v)
+            doc["cameras"] = cams
+            out.append(doc)
+        return out
+
+    def inferred_formats(self) -> list[dict]:
+        out = []
+        for sig, ad in self._inferred.items():
+            if ad:
+                out.append({"notes": ad.get("notes", []), "role": automap.role(ad),
+                            "adapter": {k: v for k, v in ad.items() if k not in ("notes", "inferred")}})
+        if self._calib:
+            out.append({"notes": [f"公共标定文件：{'、'.join(sorted(self._calib))}"], "role": "calib", "adapter": None})
+        return out
+
+    def with_sizes(self, d: dict, base_dir: str, source: str = "") -> dict:
+        """有内参但没写 width/height 的相机，从图片文件头读取分辨率（内参对应的就是原图尺寸）。"""
+        d = normalize_doc(d)
+        if not isinstance(d, dict):
+            return d
+        need = [(k, spec) for k, spec in iter_named(d.get("cameras"))
+                if spec.get("width") is None and spec.get(
+                    "intrinsic", spec.get("K", spec.get("intrinsics"))) is not None]
+        if not need:
+            return d
+        d = dict(d)
+        cams = d["cameras"]
+        cams = dict(cams) if isinstance(cams, dict) else list(cams)
+        for k, spec in need:
+            name = str(spec.get("name", k or ""))
+            img = self.resolve(spec["image"], base_dir) if spec.get("image") else None
+            img = img or self._match_by_stem(name, source)
+            if img is None:
+                continue
+            wh = self._image_size(img)
+            if wh is None:
+                continue
+            new = dict(spec, width=wh[0], height=wh[1])
+            if isinstance(cams, dict):
+                cams[k] = new
+            else:
+                cams[cams.index(spec)] = new
+        d["cameras"] = cams
+        return d
+
+    def _image_size(self, name: str) -> tuple[int, int] | None:
+        if name not in self._sizes:
+            try:
+                from PIL import Image
+                with Image.open(io.BytesIO(self.store.read(name))) as im:
+                    self._sizes[name] = im.size
+            except Exception:  # noqa: BLE001 - 读不了就当作没有尺寸，后面会报“缺少 width/height”
+                return None
+        return self._sizes[name]
 
     def _canonical(self, name: str) -> list[dict]:
         def load():
@@ -455,8 +638,15 @@ class Dataset:
             if self.virtual is not None and name.startswith(self.virtual.prefix):
                 return [self.virtual.doc(int(name[len(self.virtual.prefix):]))]
             doc = self._raw_json(name)
+            if self.adapter_name == "auto" and not looks_canonical(doc) and automap.is_coco(doc):
+                return automap.convert_coco(doc)
             ad = self._pick_adapter(doc)
-            return apply_adapter(doc, ad) if ad else [doc]
+            if not ad:
+                return [doc]
+            docs = apply_adapter(doc, ad)
+            if ad.get("inferred") and automap.role(ad) == "frames":
+                docs = self._merge_calib(docs, name)
+            return docs
         return self._docs.get(name, load)
 
     def _cache_key(self, only) -> str | None:
@@ -542,6 +732,7 @@ class Dataset:
         def load():
             d = self._canonical(ref.json_name)[ref.sub]
             base = "" if ref.json_name.startswith("@") else posixpath.dirname(ref.json_name)
+            d = self.with_sizes(d, base, ref.json_name)
             f = parse_frame(d, source=ref.json_name, base_dir=base)
             f.frame_id = f.frame_id or ref.frame_id
             f.sequence = ref.sequence
@@ -557,15 +748,37 @@ class Dataset:
             return self._traj[sequence]
 
     # ---------- 传感器数据 ----------
-    def find_image(self, frame: Frame, cam: str) -> str | None:
+    def find_image(self, frame: Frame, cam: str, source: str | None = None) -> str | None:
         s = frame.cameras[cam]
         r = self.resolve(s.path, frame.base_dir) if s.path else None
         if r:
             return r
         if len(self.images) == 1:
             return self.images[0]
+        r = self._match_by_stem(cam, source or frame.source)
+        if r:
+            return r
         same = [n for n in self.images if cam.lower() in n.lower()]
         return same[0] if len(same) == 1 else None
+
+    def _match_by_stem(self, cam: str, source: str | None) -> str | None:
+        """JSON 与图片同名（000123.json ↔ CAM_FRONT/000123.jpg）：同名图片唯一，或路径里含相机名的唯一。"""
+        if not source or source.startswith("@"):
+            return None
+        stem = posixpath.splitext(posixpath.basename(source))[0].lower()
+        hits = [n for n in self._by_stem().get(stem, [])]
+        if len(hits) == 1:
+            return hits[0]
+        named = [n for n in hits if cam.lower() in n.lower()]
+        return named[0] if len(named) == 1 else None
+
+    def _by_stem(self) -> dict[str, list[str]]:
+        if not hasattr(self, "_stems"):
+            st: dict[str, list[str]] = {}
+            for n in self.images:
+                st.setdefault(posixpath.splitext(posixpath.basename(n))[0].lower(), []).append(n)
+            self._stems = st
+        return self._stems
 
     def image_name(self, frame: Frame, cam: str) -> str:
         s = frame.cameras.get(cam)
@@ -668,8 +881,8 @@ def open_dataset(path: str | Path, adapter: str = "auto", adapters: dict | None 
     p = Path(path)
     found = nuscenes.find_meta(p)
     if found is not None:
-        # 索引缓存不写进数据目录本身（可能是只读盘或别人的数据），默认放到 ad-viz 自己的数据/缓存目录
-        default = Path(os.environ.get("ADVIZ_DATA") or Path(__file__).resolve().parent.parent / "data")
+        # 索引缓存不写进数据目录本身（可能是只读盘或别人的数据），默认放到 SensorLens 自己的数据/缓存目录
+        default = Path(os.environ.get("SENSORLENS_DATA") or Path(__file__).resolve().parent.parent / "data")
         cache = Path(nusc_cache) if nusc_cache else default / "cache" / "nuscenes"
         src = nuscenes.NuScenes.open(found[0], found[1], cache)
         return Dataset(src.store, "auto", adapters, index=index, virtual=src)

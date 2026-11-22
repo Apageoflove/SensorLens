@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from adviz import dataset as dsmod
-from adviz.dataset import DirStore, open_dataset
+from sensorlens import dataset as dsmod
+from sensorlens.dataset import DirStore, open_dataset
 
 
 def _img(p: Path, size=(64, 48)):
@@ -142,8 +142,8 @@ def make_nuscenes(root: Path, with_lidar=True, n=2):
 
 
 def test_nuscenes_native(tmp_path, adapters):
-    from adviz.render import Timing, overlay
-    from adviz.geometry import transform_points
+    from sensorlens.render import Timing, overlay
+    from sensorlens.geometry import transform_points
     root = make_nuscenes(tmp_path / "nusc")
     cache = tmp_path / "cache"
     ds = open_dataset(root, adapters=adapters, nusc_cache=cache)
@@ -160,7 +160,7 @@ def test_nuscenes_native(tmp_path, adapters):
     c = transform_points(tm.T("CAM_FRONT", "world"), box.points.mean(0, keepdims=True))[0]
     raw = ds._canonical(ds.frames[0].json_name)[0]
     cam = raw["cameras"]["CAM_FRONT"]
-    from adviz.geometry import make_T, quat_to_rot
+    from sensorlens.geometry import make_T, quat_to_rot
     T_we = make_T(quat_to_rot(cam["ego_pose"]["rotation"], "wxyz"), cam["ego_pose"]["translation"])
     T_ec = make_T(quat_to_rot(cam["extrinsic"]["rotation"], "wxyz"), cam["extrinsic"]["translation"])
     ref = transform_points(np.linalg.inv(T_we @ T_ec), np.array([[100 + 12 * np.cos(0.3), 50 + 12 * np.sin(0.3), 0.8]]))[0]

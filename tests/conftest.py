@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 @pytest.fixture(scope="session")
 def demo_root(tmp_path_factory):
-    from adviz.demo import generate
+    from sensorlens.demo import generate
     root = tmp_path_factory.mktemp("demo")
     generate(root, n_frames=3)
     return root
@@ -19,11 +19,11 @@ def demo_root(tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def adapters():
-    from adviz.adapter import load_adapters
+    from sensorlens.adapter import load_adapters
     return load_adapters(ROOT / "adapters")
 
 
 @pytest.fixture(scope="session")
 def demo_ds(demo_root, adapters):
-    from adviz.dataset import open_dataset
+    from sensorlens.dataset import open_dataset
     return open_dataset(demo_root / "demo.zip", adapters=adapters)

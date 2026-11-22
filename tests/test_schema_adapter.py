@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from adviz.adapter import apply_adapter, get_path, iter_items
-from adviz.geometry import euler_to_rot, inv_T, make_T, rot_to_quat
-from adviz.schema import R_BODY_OPT, SchemaError, parse_frame
+from sensorlens.adapter import apply_adapter, get_path, iter_items
+from sensorlens.geometry import euler_to_rot, inv_T, make_T, rot_to_quat
+from sensorlens.schema import R_BODY_OPT, SchemaError, parse_frame
 
 R_BODY = euler_to_rot(0.01, 0.03, -0.4)
 T_EGO_CAM = make_T(R_BODY @ R_BODY_OPT, [1.5, -0.2, 1.4])
@@ -63,7 +63,7 @@ def test_adapter_paths():
 
 
 def test_vendor_adapter_matches_canonical(demo_root, demo_ds, adapters):
-    from adviz.dataset import open_dataset
+    from sensorlens.dataset import open_dataset
     vd = open_dataset(demo_root / "vendor_demo", adapters=adapters)
     assert len(vd.frames) == 1 and not vd.skipped
     v, c = vd.get_frame(0), demo_ds.get_frame(0)

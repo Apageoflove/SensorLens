@@ -1,6 +1,6 @@
 import numpy as np
 
-from adviz.pointcloud import load_points, voxel_downsample, write_pcd, write_ply
+from sensorlens.pointcloud import load_points, voxel_downsample, write_pcd, write_ply
 
 PTS = np.array([[1, 2, 3, 0.5], [4, 5, 6, 0.25], [-1, 0, 2, 1.0]], np.float32)
 

@@ -8,10 +8,10 @@
 import numpy as np
 import pytest
 
-from adviz.camera import Camera
-from adviz.geometry import euler_to_rot, inv_T, make_T, rot_to_quat, rq_decompose, transform_points
-from adviz.render import Timing, overlay
-from adviz.schema import R_BODY_OPT, box_corners, parse_frame
+from sensorlens.camera import Camera
+from sensorlens.geometry import euler_to_rot, inv_T, make_T, rot_to_quat, rq_decompose, transform_points
+from sensorlens.render import Timing, overlay
+from sensorlens.schema import R_BODY_OPT, box_corners, parse_frame
 
 W, H = 1600, 1000
 K = np.array([[900.0, 0.0, 800.0], [0.0, 910.0, 500.0], [0.0, 0.0, 1.0]])
@@ -242,7 +242,7 @@ def test_time_sync_matches_truth():
 
     class DS:
         def __init__(self):
-            from adviz.motion import Trajectory
+            from sensorlens.motion import Trajectory
             self.traj = Trajectory([(t0 + 0.1 * i, pose(t0 + 0.1 * i)) for i in range(3)])
 
         def trajectory(self, seq):
@@ -278,7 +278,7 @@ def test_world_fixed_sensor_ignores_ego_motion():
 
     class DS:
         def trajectory(self, seq):
-            from adviz.motion import Trajectory
+            from sensorlens.motion import Trajectory
             return Trajectory([(10.0, make_T(None, (5, 0, 0))), (10.1, make_T(None, (7, 0, 0)))])
 
     tm = Timing(DS(), f)

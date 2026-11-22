@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ad-viz",
-  "mainBinaryName": "ad-viz",
-  "version": "0.5.0",
+  "productName": "SensorLens",
+  "mainBinaryName": "sensorlens",
+  "version": "0.6.0",
   "identifier": "io.github.apageoflove.adviz",
   "build": {
     "frontendDist": "../ui"
@@ -21,7 +21,7 @@
     "publisher": "Apageoflove",
     "copyright": "Apageoflove",
     "category": "DeveloperTool",
-    "shortDescription": "智驾多传感器标定与标注可视化",
+    "shortDescription": "SensorLens 感知透镜：智驾多传感器标定与标注可视化",
     "longDescription": "上传图片、JSON 和点云，自动完成坐标系转换，把点、线、框和点云投影到图像上，支持 BEV、3D 视图、多帧拼接和外参检查。",
     "icon": [
       "icons/32x32.png",
@@ -50,7 +50,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE5M0EwNzA3MDYwREY0MzkKUldRNTlBMEdCd2M2cVVvbU03OVh5RmdkNUhZdzJZa3BIMVlDQU84bXorTUgxU1ZMcG5rdk92ZW0K",
       "endpoints": [
-        "https://github.com/Apageoflove/ad-viz/releases/latest/download/latest.json"
+        "https://github.com/Apageoflove/SensorLens/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

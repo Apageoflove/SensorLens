@@ -18,7 +18,7 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
-const RELEASES_URL: &str = "https://github.com/Apageoflove/ad-viz/releases/latest";
+const RELEASES_URL: &str = "https://github.com/Apageoflove/SensorLens/releases/latest";
 
 #[derive(Default, Serialize, Deserialize, Clone)]
 struct Config {
@@ -39,9 +39,14 @@ fn portable_dir() -> Option<PathBuf> {
     dir.join(".portable").exists().then(|| dir.to_path_buf())
 }
 
+/// 改名前（ad-viz）的便携版文件名。升级后继续使用旧文件，已有的配置和数据不会丢。
+const LEGACY_CONFIG: &str = "ad-viz-config.json";
+const LEGACY_DATA: &str = "ad-viz-data";
+
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
     if let Some(d) = portable_dir() {
-        return Ok(d.join("ad-viz-config.json"));
+        let old = d.join(LEGACY_CONFIG);
+        return Ok(if old.exists() { old } else { d.join("SensorLens-config.json") });
     }
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     Ok(dir.join("config.json"))
@@ -66,10 +71,10 @@ fn save_config(app: &AppHandle, cfg: &Config) -> Result<(), String> {
 }
 
 fn backend_exe(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Ok(p) = std::env::var("ADVIZ_BACKEND") {
+    if let Ok(p) = std::env::var("SENSORLENS_BACKEND") {
         return Ok(PathBuf::from(p));
     }
-    let name = if cfg!(windows) { "adviz-backend.exe" } else { "adviz-backend" };
+    let name = if cfg!(windows) { "sensorlens-backend.exe" } else { "sensorlens-backend" };
     let mut candidates = Vec::new();
     if let Ok(res) = app.path().resource_dir() {
         candidates.push(res.join("backend").join(name));
@@ -80,7 +85,7 @@ fn backend_exe(app: &AppHandle) -> Result<PathBuf, String> {
     candidates
         .into_iter()
         .find(|p| p.is_file())
-        .ok_or_else(|| "找不到后端程序 backend/adviz-backend，安装可能不完整，请重新安装".to_string())
+        .ok_or_else(|| "找不到后端程序 backend/sensorlens-backend，安装可能不完整，请重新安装".to_string())
 }
 
 fn log_tail(path: &Path) -> String {
@@ -137,7 +142,7 @@ fn start_backend(app: &AppHandle) -> Result<String, String> {
         .arg("--data")
         .arg(&data)
         .arg("--watch-stdin")
-        .env("ADVIZ_TOKEN", &token)
+        .env("SENSORLENS_TOKEN", &token)
         .env("PYTHONIOENCODING", "utf-8")
         .stdin(Stdio::piped())
         .stdout(log.try_clone().map_err(|e| e.to_string())?)
@@ -179,7 +184,7 @@ fn navigate(app: &AppHandle, url: &str) -> Result<(), String> {
 }
 
 fn pick_dir(app: &AppHandle) -> Result<Option<PathBuf>, String> {
-    let picked = app.dialog().file().set_title("选择 ad-viz 数据目录（会话、缓存、日志）").blocking_pick_folder();
+    let picked = app.dialog().file().set_title("选择 SensorLens 数据目录（会话、缓存、日志）").blocking_pick_folder();
     match picked {
         Some(p) => Ok(Some(p.into_path().map_err(|e| e.to_string())?)),
         None => Ok(None),
@@ -200,7 +205,8 @@ fn app_info(app: AppHandle) -> Value {
 
 fn default_data_dir(app: &AppHandle) -> Option<PathBuf> {
     if let Some(d) = portable_dir() {
-        return Some(d.join("ad-viz-data"));
+        let old = d.join(LEGACY_DATA);
+        return Some(if old.exists() { old } else { d.join("SensorLens-data") });
     }
     app.path().app_local_data_dir().ok()
 }
@@ -366,7 +372,7 @@ pub fn run() {
         ])
         .setup(|app| {
             let mut b = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title("ad-viz")
+                .title("SensorLens")
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(900.0, 600.0)
                 // 让网页自己处理拖入文件（上传区），而不是被外壳拦截
@@ -378,7 +384,7 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building ad-viz");
+        .expect("error while building SensorLens");
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
             stop_backend(handle);

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from adviz.geometry import FrameGraph, euler_to_rot, inv_T, make_T, quat_to_rot, rot_to_quat, transform_points
+from sensorlens.geometry import FrameGraph, euler_to_rot, inv_T, make_T, quat_to_rot, rot_to_quat, transform_points
 
 S = np.sqrt(0.5)
 

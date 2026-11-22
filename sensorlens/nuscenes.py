@@ -1,7 +1,7 @@
 """直接读取 nuScenes 数据目录（v1.0-* 元数据 + samples/），不需要先转换格式。
 
 元数据表很大（trainval 的 sample_data.json 约 1.3 GB），首次打开时流式扫描一遍，
-只保留关键帧和“磁盘上确实有文件”的传感器，结果缓存到 ad-viz 的数据目录；之后再打开只读缓存。
+只保留关键帧和“磁盘上确实有文件”的传感器，结果缓存到 SensorLens 的数据目录；之后再打开只读缓存。
 帧对应 nuScenes 的 sample（关键帧）；每个相机、雷达用自己 sample_data 的时间戳和 ego_pose，
 标注是世界系 3D 框，与 nuscenes-devkit 的投影公式一致。
 """

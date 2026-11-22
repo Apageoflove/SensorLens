@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 art, version, base = Path(sys.argv[1]), sys.argv[2], sys.argv[3].rstrip("/")
-notes = sys.argv[4] if len(sys.argv) > 4 else f"ad-viz v{version}"
+notes = sys.argv[4] if len(sys.argv) > 4 else f"SensorLens v{version}"
 
 # 更新器先找 {os}-{arch}-{安装方式}，找不到再用 {os}-{arch}
 RULES = [

@@ -1,10 +1,10 @@
 """批量命令行。
 
-python -m adviz.cli export <输入> --out <目录>      导出全部可视化（投影图、环视拼图、BEV、报告）
-python -m adviz.cli render <输入> --out <目录>      批量出投影图
-python -m adviz.cli check  <输入> --out report.csv  批量外参检查
-python -m adviz.cli stitch <输入> --frames 0-9 --out a.ply [--bev a.png]
-python -m adviz.cli demo   <目录>                    生成演示数据
+python -m sensorlens.cli export <输入> --out <目录>      导出全部可视化（投影图、环视拼图、BEV、报告）
+python -m sensorlens.cli render <输入> --out <目录>      批量出投影图
+python -m sensorlens.cli check  <输入> --out report.csv  批量外参检查
+python -m sensorlens.cli stitch <输入> --frames 0-9 --out a.ply [--bev a.png]
+python -m sensorlens.cli demo   <目录>                    生成演示数据
 输入可以是目录、zip、单个 json 或 nuScenes 数据根目录。
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ from pathlib import Path
 from .adapter import load_adapters
 from .dataset import Dataset, open_dataset, parse_frame_spec
 
-ROOT = Path(os.environ.get("ADVIZ_RES") or Path(__file__).resolve().parent.parent)
+ROOT = Path(os.environ.get("SENSORLENS_RES") or Path(__file__).resolve().parent.parent)
 _ds: Dataset | None = None
 _sync = True
 
@@ -77,7 +77,7 @@ def _run_pool(ds: Dataset, args, fn, jobs, workers: int):
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="adviz")
+    ap = argparse.ArgumentParser(prog="sensorlens")
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("export", "render", "check", "stitch"):
         p = sub.add_parser(name)

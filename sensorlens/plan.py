@@ -11,7 +11,7 @@ def viz_plan(ds) -> dict:
     if not refs:
         return {"views": [], "default": None, "notes": [], "has": {}}
     picks = sorted({0, len(refs) // 2, len(refs) - 1})[:SAMPLE]
-    has = {"cameras": max(len(r.cameras) for r in refs), "lidar": any(r.lidars for r in refs),
+    has = {"cameras": max(len(r.cameras) for r in refs), "lidar": False,
            "pose": any(r.poses for r in refs), "intrinsic": False, "extrinsic": False, "ann3d": False, "ann2d": False}
     for i in picks:
         try:
@@ -22,6 +22,12 @@ def viz_plan(ds) -> dict:
             has["intrinsic"] |= s.camera is not None
             has["extrinsic"] |= s.T_parent_sensor is not None
         has["ann3d"] |= any(a.kind not in KINDS_2D for a in f.annotations)
+        for n in f.lidars:
+            try:
+                ds.lidar_name(f, n)
+                has["lidar"] = True
+            except (FileNotFoundError, KeyError):
+                has["lidar_missing"] = True
         has["ann2d"] |= any(a.kind in KINDS_2D for a in f.annotations)
     seq_len = {}
     for r in refs:
@@ -48,6 +54,8 @@ def viz_plan(ds) -> dict:
         notes.append("JSON 里没有相机内参：只能显示图片和 2D 标注，3D 数据无法投影到图像")
     elif has["cameras"] and not has["extrinsic"]:
         notes.append("JSON 里没有相机外参：只能显示图片和 2D 标注")
+    if has.get("lidar_missing") and not has["lidar"]:
+        notes.append("JSON 里写了雷达，但点云文件不在数据里：只显示图片和标注，标定按标注校验")
     if can_proj and (has["lidar"] or has["ann3d"]):
         notes.append("投影前会按序列自动校验外参：约定写错时自动修正，有点云或 2D 框时再微调姿态；"
                      "校验不通过又修不好的相机不显示 3D 投影")

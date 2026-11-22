@@ -34,8 +34,8 @@ from .schema import SchemaError
 
 ROOT = Path(__file__).resolve().parent.parent
 # RES：只读资源（网页、适配器、示例），桌面版打包后由入口程序指定；DATA：用户数据，可写
-RES = Path(os.environ.get("ADVIZ_RES", ROOT)).resolve()
-DATA = Path(os.environ.get("ADVIZ_DATA", ROOT / "data")).resolve()
+RES = Path(os.environ.get("SENSORLENS_RES", ROOT)).resolve()
+DATA = Path(os.environ.get("SENSORLENS_DATA", ROOT / "data")).resolve()
 SESSIONS = DATA / "sessions"
 TMP = DATA / "tmp"
 WEB = RES / "web"
@@ -45,14 +45,14 @@ USER_ADAPTERS_DIR = DATA / "adapters"
 CATEGORIES_FILE = DATA / "categories.json" if (DATA / "categories.json").is_file() else RES / "config" / "categories.json"
 MAX_STITCH_FRAMES = 300
 # 桌面版用随机令牌保护本机端口，防止同机其他网页或程序访问；命令行直接启动时不设置，保持原行为
-TOKEN = os.environ.get("ADVIZ_TOKEN") or None
+TOKEN = os.environ.get("SENSORLENS_TOKEN") or None
 
 for d in (SESSIONS, TMP):
     d.mkdir(parents=True, exist_ok=True)
 # 上传的大文件会先落到临时目录，这里固定到数据目录内，避免写到系统盘。
 tempfile.tempdir = str(TMP)
 
-app = FastAPI(title="ad-viz", version="0.5.0")
+app = FastAPI(title="SensorLens", version="0.6.0")
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
 
@@ -61,13 +61,13 @@ async def _auth(request: Request, call_next):
     if TOKEN is None:
         return await call_next(request)
     q = request.query_params.get("token")
-    ok = secrets.compare_digest(request.cookies.get("adviz_token", ""), TOKEN) or (
+    ok = secrets.compare_digest(request.cookies.get("sensorlens_token", ""), TOKEN) or (
         q is not None and secrets.compare_digest(q, TOKEN))
     if not ok:
         return JSONResponse(status_code=403, content={"detail": "未授权"})
     resp = await call_next(request)
     if q is not None:
-        resp.set_cookie("adviz_token", TOKEN, httponly=True, samesite="strict")
+        resp.set_cookie("sensorlens_token", TOKEN, httponly=True, samesite="strict")
     return resp
 
 @app.middleware("http")
@@ -259,7 +259,7 @@ async def open_local(request: Request):
         raise HTTPException(400, "请填写本机路径")
     p = Path(os.path.expandvars(os.path.expanduser(path)))
     if not p.is_absolute():
-        raise HTTPException(400, "请填写完整路径，例如 E:\\data\\seq01")
+        raise HTTPException(400, "请填写完整的绝对路径（从盘符或 / 开始）")
     if not p.exists():
         raise HTTPException(404, f"路径不存在：{p}")
     if p.is_file() and p.suffix.lower() not in (".zip", ".json"):
@@ -532,7 +532,7 @@ async def start_export(sid: str, request: Request):
         raise HTTPException(400, "请选择导出文件夹")
     p = Path(os.path.expandvars(os.path.expanduser(out)))
     if not p.is_absolute():
-        raise HTTPException(400, "请填写完整路径，例如 E:\\out\\viz")
+        raise HTTPException(400, "请填写完整的绝对路径（从盘符或 / 开始）")
     if p.exists() and not p.is_dir():
         raise HTTPException(400, f"{p} 是文件，不是文件夹")
     frames = parse_frame_spec(str(body.get("frames") or "0"), len(ds.frames), 100_000)

@@ -1,49 +1,61 @@
-# ad-viz：智能驾驶多传感器快速可视化
+<p align="center"><img src="docs/icon.png" width="112" alt="SensorLens"></p>
 
-上传图片、JSON（内外参、位姿、标注）和点云，自动完成坐标系转换，在图像上画出点云投影、3D 框、车道线和关键点，以及 2D 框、2D 折线和 2D 点。也支持 BEV 俯视图、浏览器内 3D 点云视图、多雷达和多帧点云拼接、时间同步与运动去畸变，以及外参约定的自动检查。
+# SensorLens 感知透镜
+
+智能驾驶多传感器标定与标注的可视化工具。给它图片和配对的 JSON（内外参、位姿、标注，点云可选），它会自动识别 JSON 格式、完成坐标系转换并校验标定，把点云、3D 框、车道线、关键点和 2D 标注画到图像上，也能生成 BEV 俯视图、3D 视图和多帧拼接，结果可以一次导出到指定文件夹。
 
 只有“图片 + JSON”（没有点云，甚至没有内外参）的数据也能用：2D 标注直接画在图上，有内外参时 3D 标注也会投影上去。
 
 ## 源码运行
 
-```powershell
-cd E:\Tools\ad-viz
-.\run.ps1            # 打开 http://127.0.0.1:8765
-.\test.ps1           # 单元测试
+需要 Python 3.10 及以上。
+
+```bash
+git clone https://github.com/Apageoflove/SensorLens.git
+cd SensorLens
+python -m pip install -r requirements.txt
+python -m uvicorn sensorlens.server:app --port 8765     # 浏览器打开 http://127.0.0.1:8765
 ```
 
-- 使用 `E:\Must_System\Anaconda\python.exe` 里已有的包（numpy、Pillow、FastAPI、uvicorn），不安装任何东西。要换解释器，先设置环境变量 `ADVIZ_PYTHON`。
-- `env.ps1` 把 TEMP、Python 字节码缓存、上传临时文件都指到项目内的 `.cache\`，上传数据存放在 `data\sessions\`。
+Windows 上也可以用脚本：
+
+```powershell
+.\run.ps1            # 启动服务，打开 http://127.0.0.1:8765
+.\test.ps1           # 单元测试（需要 pip install -r requirements-build.txt）
+```
+
+- 脚本默认使用仓库里的 `.venv`（存在时）或 PATH 上的 `python`。要指定解释器，设置环境变量 `SENSORLENS_PYTHON`，或者在仓库根目录建一个 `env.local.ps1` 写入 `$env:SENSORLENS_PYTHON = "<python.exe 的路径>"`（这个文件不会提交）。
+- `env.ps1` 把临时文件和 Python 字节码缓存放在仓库内的 `.cache/`，上传的数据放在 `data/sessions/`。
 - 服务只监听 127.0.0.1。
 
 先用演示数据试一下：
 
 | 样例 | 内容 |
 |---|---|
-| `samples\demo.zip`（或 `samples\demo` 文件夹） | 5 帧，两个相机（含鱼眼）+ 旋转雷达（带逐点时间），3D 框、2D 框、车道线、行人脚点 |
-| `samples\vendor_demo` | 第三方格式（格式选 `vendor_demo`），binary_compressed PCD，微秒时间戳 |
-| `samples\image_only` | 只有一张图片 + 2D 框 / 2D 车道线，没有内外参和点云 |
-| `samples\mono3d` | 图片 + 内外参 + 2D/3D 框，没有点云 |
+| `samples/demo.zip`（或 `samples/demo` 文件夹） | 5 帧，两个相机（含鱼眼）+ 旋转雷达（带逐点时间），3D 框、2D 框、车道线、行人脚点 |
+| `samples/vendor_demo` | 第三方格式（格式选 `vendor_demo`），binary_compressed PCD，微秒时间戳 |
+| `samples/image_only` | 只有一张图片 + 2D 框 / 2D 车道线，没有内外参和点云 |
+| `samples/mono3d` | 图片 + 内外参 + 2D/3D 框，没有点云 |
 
 重新生成演示数据：
 
-```powershell
-. .\env.ps1; & $env:ADVIZ_PYTHON -m adviz.cli demo samples --frames 5
+```bash
+python -m sensorlens.cli demo samples --frames 5
 ```
 
 ## 桌面版（Windows / Linux）
 
-到 [Releases](https://github.com/Apageoflove/ad-viz/releases/latest) 下载：
+到 [Releases](https://github.com/Apageoflove/SensorLens/releases/latest) 下载：
 
 | 文件 | 说明 |
 |---|---|
-| `ad-viz_<版本>_x64-setup.exe` | Windows 安装版（装到当前用户，不需要管理员权限） |
-| `ad-viz_<版本>_amd64.deb` / `.rpm` | Ubuntu、Debian / Fedora、openSUSE 安装版 |
-| `ad-viz_<版本>_amd64.AppImage` | 任意 Linux 发行版，`chmod +x` 后直接运行 |
+| `SensorLens_<版本>_x64-setup.exe` | Windows 安装版（装到当前用户，不需要管理员权限） |
+| `SensorLens_<版本>_amd64.deb` / `.rpm` | Ubuntu、Debian / Fedora、openSUSE 安装版 |
+| `SensorLens_<版本>_amd64.AppImage` | 任意 Linux 发行版，`chmod +x` 后直接运行 |
 | `*_portable.zip` / `*_portable.tar.gz` | 便携版，解压即用，不写系统目录 |
 
 - 第一次打开时选择数据目录（上传的数据、索引缓存、日志都放在这里）。之后可以点右下角“数据目录”切换，旧目录不会被删除。
-- 安装版点右下角“检查更新”即可下载并覆盖安装新版本，数据目录和设置保留不变。便携版会打开下载页，下载新版后把文件夹替换掉即可（数据目录 `ad-viz-data` 留着）。
+- 安装版点右下角“检查更新”即可下载并覆盖安装新版本，数据目录和设置保留不变。便携版会打开下载页，下载新版后把文件夹替换掉即可（数据目录 `SensorLens-data` 留着；从旧名 ad-viz 升级时沿用原来的 `ad-viz-data`）。
 - Linux 需要 WebKitGTK 4.1（Ubuntu 22.04+ 自带）。
 - 后端只监听 127.0.0.1 的随机端口，并要求一次性令牌，本机其他程序和网页访问不到。
 
@@ -82,17 +94,16 @@ cd desktop\src-tauri; cargo tauri build --bundles nsis      # Linux: --bundles d
 
 ## 批量命令行（大数据量用这个）
 
-```powershell
-. .\env.ps1
-& $env:ADVIZ_PYTHON -m adviz.cli export D:\data\batch.zip --out out\viz              # 投影图 + 环视 + BEV + 报告
-& $env:ADVIZ_PYTHON -m adviz.cli render D:\data\batch.zip --out out\render --workers 8
-& $env:ADVIZ_PYTHON -m adviz.cli check  D:\data\batch.zip --out out\report.csv --workers 8
-& $env:ADVIZ_PYTHON -m adviz.cli stitch D:\data\batch.zip --frames 0-99 --target world --out out\map.ply --bev out\map.png
+```bash
+python -m sensorlens.cli export data/batch.zip --out out/viz              # 投影图 + 环视 + BEV + 报告
+python -m sensorlens.cli render data/batch.zip --out out/render --workers 8
+python -m sensorlens.cli check  data/batch.zip --out out/report.csv --workers 8
+python -m sensorlens.cli stitch data/batch.zip --frames 0-99 --target world --out out/map.ply --bev out/map.png
 ```
 
 输入可以是目录、zip、单个 JSON 或 nuScenes 数据根目录。`--adapter` 指定格式（默认自动识别），`--frames`、`--cameras` 用来选择范围，`--no-sync` 关闭时间同步。多进程之间共享同一份帧索引，每个进程只读取自己负责的帧。
 
-大数据集：JSON 数量达到 400 个时自动多进程建索引。`--cache out\index.json` 会把索引存到文件里，数据不变时下次直接读缓存（以文件大小和修改时间判断是否变化）。网页上传的会话会自动缓存索引。
+大数据集：JSON 数量达到 400 个时自动多进程建索引。`--cache out/index.json` 会把索引存到文件里，数据不变时下次直接读缓存（以文件大小和修改时间判断是否变化）。网页上传的会话会自动缓存索引。
 
 ## 标准 JSON 格式
 
@@ -168,6 +179,18 @@ cd desktop\src-tauri; cargo tauri build --bundles nsis      # Linux: --bundles d
 
 自车系约定为 x 前、y 左、z 上。
 
+## 任意格式的 JSON：自动识别
+
+不同公司、不同数据集的 JSON 写法各不相同。不是标准格式、也没有匹配的适配器时，程序会抽样同一种格式的几个文件，按字段名和数值形状推断每样东西在哪里、该怎么读，然后照常可视化：
+
+- 相机：图片路径看扩展名；内参看是否为上三角且焦距为正（3x3、扁平 9 个数、`fx/fy/cx/cy`、KITTI 的 3x4 投影矩阵 `P2` 都可以）；没写分辨率时从图片读取。
+- 外参和位姿：4x4 / 3x4 矩阵，或旋转 + 平移（包括 `sensor2ego_rotation` + `sensor2ego_translation` 这种平铺写法）。方向从字段名读，例如 `cam2ego`、`lidar_to_cam`、`T_cam_ego`、`ego2global`；KITTI 的 `Tr_velo_to_cam` 会自动乘上 `R0_rect`。
+- 标注：3 维中心 + 3 维尺寸是 3D 框，`[x,y,z,l,w,h,yaw]` 数组和与之并列的类别数组（`gt_boxes` + `gt_names`）也能识别；4 个数或 `xmin/ymin/xmax/ymax` 一类字段是 2D 框；N×2 / N×3 是折线、多边形或点。labelme 的 `shape_type` 和 COCO 的 images / annotations / categories 三张表也支持。
+- 能从数值判断的歧义按全部样本统计：框尺寸顺序（最长边是长）、2D 框是 xyxy 还是 xywh、四元数是 wxyz 还是 xyzw、角度单位，以及框所在的坐标系（世界系、雷达系、KITTI 的相机系）。
+- 只有相机标定、没有图片和标注的 JSON（如 `calib.json`）作为同目录各帧的公共标定；JSON 与图片同名时（`000123.json` ↔ `CAM_FRONT/000123.jpg`）自动配对。
+
+推断依据会列在侧栏“JSON 格式自动识别”里，可以点“下载为适配器”保存成文件，检查或修改后放进 `adapters/` 固定下来。外参方向、四元数顺序、相机轴约定即使推断错了，打开时的自动标定校验也会用图像核对并修正；仍对不上的相机不画 3D 投影。字段名和数值都无法判断的格式会被跳过并说明原因，这时请写一个适配器。
+
 ## 接入新格式：适配器
 
 不用改代码。在 `adapters\` 下放一个 JSON，把源字段映射到标准字段，页面和命令行都能选到它。参考 `adapters\vendor_demo.json`：
@@ -175,7 +198,8 @@ cd desktop\src-tauri; cargo tauri build --bundles nsis      # Linux: --bundles d
 - `detect`：自动识别时，这些路径都存在才使用此适配器。
 - `frames`：一个 JSON 里有多帧时，指向帧列表（如 `"data[*]"`）。
 - `fields` / `cameras` / `lidars` / `annotations`：`items` 指向元素列表，`fields` 是“标准字段 → 源路径”。
-- 路径语法：`a.b[0].c`；`[*]` 遍历数组；`.*` 遍历对象的值；`$key` 取当前元素的键；`$root.x` 从文档根取值；`=opencv` 表示常量；写成数组时取第一个存在的值。
+- 路径语法：`a.b[0].c`；`[*]` 遍历数组；`.*` 遍历对象的值；`$key` 取当前元素的键；`$root.x` 从文档根取值，`$frame.x` 从当前帧取值；路径里的 `[$key]` 换成当前元素的下标（并列数组 `names[$key]`）；`=opencv` 表示常量；写成数组时取第一个存在的值；`{"$array": [路径, ...]}` 把几个值组成数组。
+- `where`：`{路径: 正则}`，只取匹配的元素（例如同一个传感器列表里只取相机）；`group`：先遍历分组（例如每个相机），`items` 在组内取值，`$groupkey` 是组名。
 
 ## 外参检查原理
 
@@ -193,13 +217,16 @@ cd desktop\src-tauri; cargo tauri build --bundles nsis      # Linux: --bundles d
 ## 目录
 
 ```
-adviz/       geometry 变换与坐标系图 | camera 相机模型 | pointcloud 点云读写
-             schema 标准格式解析 | adapter 字段映射 | dataset 目录/zip 索引
+sensorlens/  geometry 变换与坐标系图 | camera 相机模型 | pointcloud 点云读写
+             schema 标准格式解析 | adapter 字段映射 | automap 未知格式自动识别 | dataset 目录/zip 索引
              render 投影/BEV/拼接/时间同步 | motion 位姿插值与去畸变 | categories 类别归组
-             calibcheck 外参检查 | server Web 服务 | cli 批量 | demo 演示数据
+             calibcheck 外参检查 | autocalib 自动标定校验 | integrity 图片完整性 | plan 视图选择
+             export 导出 | server Web 服务 | cli 批量 | demo 演示数据
 web/         前端（原生 JS + Canvas + WebGL，无需构建）
+desktop/     桌面外壳（Tauri）
 adapters/    格式适配器
 config/      类别配置 categories.json
+docs/        图标等文档资源
 samples/     演示数据
 tests/       单元测试
 data/        上传会话（运行时生成）

@@ -143,7 +143,7 @@ async function openLocal(path) {
   path = (path ?? $("#localPath").value).trim();
   if (!path) { status("请填写本机路径", "warn"); return; }
   $("#localPath").value = path;
-  localStorage.setItem("adviz.localPath", path);
+  localStorage.setItem("sensorlens.localPath", path);
   setBusy(true);
   $("#progress").textContent = "正在扫描并建立索引…（nuScenes 完整数据首次约需 1 分钟，之后读缓存）";
   try {
@@ -182,6 +182,11 @@ function sessionInfo(s) {
     out.push(`<span class="plan">自动可视化：${plan.views.map((v) => `<b>${esc(v.title)}</b>（${esc(v.detail)}）`).join("，")}</span>`);
   }
   for (const n of plan.notes || []) out.push(`<span class="muted">${esc(n)}</span>`);
+  (ii.inferred_formats || []).forEach((f, i) => {
+    const dl = f.adapter ? ` <a href="#" class="lnkAdapter" data-i="${i}">下载为适配器</a>` : "";
+    out.push(`<details class="infer"><summary>JSON 格式自动识别${f.role === "calib" ? "（公共标定）" : ""}${dl}</summary>` +
+      (f.notes || []).map((n) => `<div>${esc(n)}</div>`).join("") + `</details>`);
+  });
   if (s.source) out.push(`<a href="#" id="lnkRescan">重新扫描</a>`);
   return out.join("<br>");
 }
@@ -198,6 +203,13 @@ function onSession(s, keepView = false) {
     (s.skipped.length ? `，跳过 ${s.skipped.length} 个 JSON` : "") + (s.index_info?.cached ? "（索引来自缓存）" : "");
   $("#dataInfo").innerHTML = sessionInfo(s);
   $("#lnkRescan")?.addEventListener("click", (e) => { e.preventDefault(); rescan(); });
+  document.querySelectorAll(".lnkAdapter").forEach((el) => el.addEventListener("click", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const f = s.index_info.inferred_formats[+el.dataset.i];
+    const blob = new Blob([JSON.stringify({ name: "my_format", ...f.adapter }, null, 2)], { type: "application/json" });
+    const u = URL.createObjectURL(blob), link = document.createElement("a");
+    link.href = u; link.download = "my_format.json"; link.click(); setTimeout(() => URL.revokeObjectURL(u), 1000);
+  }));
   const sel = $("#frame");
   const multiSeq = nSeq > 1;
   sel.innerHTML = s.frames.map((f, i) => `<option value="${i}">${i}: ${esc(f.frame_id)}${multiSeq && !String(f.frame_id).includes(f.sequence) ? " · " + esc(f.sequence) : ""}</option>`).join("");
@@ -816,7 +828,7 @@ function showSrc(name) {
   $("#srcLocal").hidden = name !== "local"; $("#btnLocal").hidden = name !== "local";
 }
 for (const b of document.querySelectorAll("#srcTabs button")) b.onclick = () => showSrc(b.dataset.src);
-$("#localPath").value = localStorage.getItem("adviz.localPath") || "";
+$("#localPath").value = localStorage.getItem("sensorlens.localPath") || "";
 $("#localPath").addEventListener("keydown", (e) => { if (e.key === "Enter") openLocal(); });
 $("#btnLocal").onclick = () => openLocal();
 // ---------------- 小组件 ----------------
@@ -827,11 +839,11 @@ for (const o of document.querySelectorAll("output[for]")) {
 }
 $("#sideToggle").onclick = () => {
   document.body.classList.toggle("side-collapsed");
-  localStorage.setItem("adviz.side", document.body.classList.contains("side-collapsed") ? "0" : "1");
+  localStorage.setItem("sensorlens.side", document.body.classList.contains("side-collapsed") ? "0" : "1");
   window.dispatchEvent(new Event("resize"));
   if (S.img) { fitView(); draw(); }
 };
-if (localStorage.getItem("adviz.side") === "0" || (localStorage.getItem("adviz.side") === null && innerWidth < 820)) {
+if (localStorage.getItem("sensorlens.side") === "0" || (localStorage.getItem("sensorlens.side") === null && innerWidth < 820)) {
   document.body.classList.add("side-collapsed");
 }
 $("#drawerToggle").onclick = () => $("#drawer").classList.toggle("collapsed");
@@ -874,7 +886,7 @@ function exportFrames() {
   return $("#exportFrames").value.trim() || String(S.idx);
 }
 $("#exportScope").onchange = () => { $("#exportCustomRow").hidden = $("#exportScope").value !== "custom"; };
-$("#exportDir").value = localStorage.getItem("adviz.exportDir") || "";
+$("#exportDir").value = localStorage.getItem("sensorlens.exportDir") || "";
 const EXPORT_STATUS = { skipped: "跳过", failed: "失败", partial: "仅 2D" };
 function showExport(j) {
   const c = j.counts;
@@ -896,7 +908,7 @@ $("#btnExport").onclick = async () => {
   const kinds = [["#expCam", "camera"], ["#expGrid", "surround"], ["#expBev", "bev"]]
     .filter(([id]) => $(id).checked && !$(id).closest("label").hidden).map(([, k]) => k);
   if (!kinds.length) { status("至少选择一种导出内容", "warn"); return; }
-  localStorage.setItem("adviz.exportDir", dir);
+  localStorage.setItem("sensorlens.exportDir", dir);
   const body = { out_dir: dir, frames: exportFrames(), kinds, sync: $("#sync").checked,
     style: { color_by: $("#colorBy").value, point_size: +$("#ptSize").value, alpha: +$("#ptAlpha").value / 100,
              density: +$("#ptDensity").value / 100, tone: $("#ptTone").value, lidar: $("#showPts").checked, ann: $("#showAnn").checked } };
@@ -957,7 +969,7 @@ async function initDesktop() {
   $("#btnExportBrowse").onclick = async () => {
     try {
       const p = await tauri.invoke("pick_folder", { title: "选择导出文件夹" });
-      if (p) { $("#exportDir").value = p; localStorage.setItem("adviz.exportDir", p); }
+      if (p) { $("#exportDir").value = p; localStorage.setItem("sensorlens.exportDir", p); }
     } catch (err) { status("选择文件夹失败: " + err, "err"); }
   };
   $("#btnDataDir").onclick = async (e) => {

@@ -89,17 +89,17 @@ jobs:
           b=desktop/src-tauri/target/release/bundle
           find "$b" -maxdepth 2 -type f \( -name '*-setup.exe' -o -name '*-setup.exe.sig' -o -name '*.deb' -o -name '*.deb.sig' \
             -o -name '*.rpm' -o -name '*.rpm.sig' -o -name '*.AppImage' -o -name '*.AppImage.sig' \) -exec cp {} out/ \;
-          p=ad-viz-portable
+          p=SensorLens-portable
           rm -rf "$p"; mkdir "$p"
           cp -r build/backend "$p/backend"
           : > "$p/.portable"
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cp desktop/src-tauri/target/release/ad-viz.exe "$p/"
-            7z a -tzip "out/ad-viz_${v}_windows_x64_portable.zip" "$p" > /dev/null
+            cp desktop/src-tauri/target/release/sensorlens.exe "$p/"
+            7z a -tzip "out/SensorLens_${v}_windows_x64_portable.zip" "$p" > /dev/null
           else
-            cp desktop/src-tauri/target/release/ad-viz "$p/"
-            chmod +x "$p/ad-viz" "$p/backend/adviz-backend"
-            tar czf "out/ad-viz_${v}_linux_x64_portable.tar.gz" "$p"
+            cp desktop/src-tauri/target/release/sensorlens "$p/"
+            chmod +x "$p/sensorlens" "$p/backend/sensorlens-backend"
+            tar czf "out/SensorLens_${v}_linux_x64_portable.tar.gz" "$p"
           fi
           ls -la out
 
@@ -122,7 +122,7 @@ jobs:
       - name: 生成 latest.json
         run: |
           v="${GITHUB_REF_NAME#v}"
-          python3 packaging/make_latest_json.py art "$v" "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" "ad-viz ${GITHUB_REF_NAME}"
+          python3 packaging/make_latest_json.py art "$v" "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" "SensorLens ${GITHUB_REF_NAME}"
           ls -la art
       - name: 发布 Release
         env:
@@ -130,6 +130,6 @@ jobs:
         run: |
           cd art
           files=$(ls | grep -v '\.sig$')
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "ad-viz $GITHUB_REF_NAME" \
-            --notes-file <(printf '安装版：Windows 用 *-setup.exe，Linux 用 .deb / .rpm / .AppImage。\n便携版：*_portable.zip / *_portable.tar.gz，解压即用，数据默认放在解压目录里的 ad-viz-data。\n已安装的版本可以在程序右下角“检查更新”直接升级。\n') \
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "SensorLens $GITHUB_REF_NAME" \
+            --notes-file <(printf '安装版：Windows 用 *-setup.exe，Linux 用 .deb / .rpm / .AppImage。\n便携版：*_portable.zip / *_portable.tar.gz，解压即用，数据默认放在解压目录里的 SensorLens-data。\n已安装的版本可以在程序右下角“检查更新”直接升级。\n') \
             $files *.sig

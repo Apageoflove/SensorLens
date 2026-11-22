@@ -28,6 +28,7 @@ svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width:
 #side { width: 272px; flex: none; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line);
         display: flex; flex-direction: column; }
 .brand { display: flex; align-items: baseline; gap: 10px; height: 34px; padding: 0 14px; border-bottom: 1px solid var(--line); flex: none; }
+.logo { width: 20px; height: 20px; margin-right: 7px; vertical-align: -5px; }
 .wordmark { font: 600 13px/34px var(--mono); letter-spacing: .02em; color: var(--text); }
 .brand-sub { font-size: 11px; color: var(--mute); }
 #side section { padding: 10px 14px 12px; border-bottom: 1px solid var(--line); }
@@ -196,6 +197,10 @@ th { color: var(--mute); position: sticky; top: 0; background: var(--panel); fon
 tr:hover td { background: #222; }
 #panel .calib { padding: 2px 0 4px; }
 #dataInfo .plan b { color: var(--text); font-weight: 600; }
+#dataInfo details.infer { margin: 2px 0; }
+#dataInfo details.infer summary { cursor: pointer; color: var(--text); }
+#dataInfo details.infer div { padding-left: 12px; color: var(--muted); }
+#dataInfo details.infer a { color: var(--accent); }
 #exportInfo { margin-top: 6px; font: 11.5px/1.6 var(--mono); word-break: break-all; }
 #exportInfo:empty { display: none; }
 #exportInfo a { color: var(--accent); }

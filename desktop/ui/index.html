@@ -2,13 +2,14 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>ad-viz</title>
+<title>SensorLens</title>
 <style>
   html, body { margin: 0; height: 100%; background: #161616; color: #d8d8d8;
     font: 13px/1.6 "Segoe UI", system-ui, "Microsoft YaHei", "PingFang SC", sans-serif; }
   body { display: flex; align-items: center; justify-content: center; }
   main { width: 460px; }
   .mark { font: 600 15px "Cascadia Mono", Consolas, monospace; margin-bottom: 18px; }
+  .mark img { width: 28px; height: 28px; vertical-align: -8px; margin-right: 10px; }
   .mark span { color: #6e6e6e; font: 12px "Segoe UI", "Microsoft YaHei", sans-serif; margin-left: 10px; }
   p { margin: 0 0 12px; color: #9a9a9a; }
   code { font: 12px "Cascadia Mono", Consolas, monospace; color: #d8d8d8; word-break: break-all; }
@@ -24,7 +25,7 @@
 </head>
 <body>
 <main>
-  <div class="mark">ad-viz<span id="ver"></span></div>
+  <div class="mark"><img src="icon.png" alt="">SensorLens<span id="ver"></span></div>
   <section id="setup" hidden>
     <p>第一次使用，请选择数据目录。上传的数据、索引缓存和日志都会放在这里；升级或重装软件不会动它，之后可以在右下角“数据目录”切换。</p>
     <p>默认位置：<code id="def"></code></p>
