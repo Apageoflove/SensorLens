@@ -1,0 +1,54 @@
+{
+  "name": "vendor_demo",
+  "description": "演示用第三方格式：扁平 K、ego→sensor 的 4x4 相机外参、xyzw 四元数、wlh 框尺寸、xywh 的 2D 框、微秒时间戳、相机曝光时刻位姿",
+  "detect": ["meta.token", "calib.cams"],
+  "conventions": {
+    "quat_order": "xyzw",
+    "box_size_order": "wlh",
+    "time_unit": "us",
+    "bbox_format": "xywh"
+  },
+  "fields": {
+    "frame_id": "meta.token",
+    "timestamp": "meta.stamp_us",
+    "ego_pose": {"rotation": "pose.q_xyzw", "translation": "pose.t"}
+  },
+  "cameras": {
+    "items": "calib.cams[*]",
+    "fields": {
+      "name": "sensor_id",
+      "image": "img_file",
+      "width": "w",
+      "height": "h",
+      "timestamp": "stamp_us",
+      "intrinsic": "K",
+      "distortion": {"model": "cam_model", "coeffs": "D"},
+      "extrinsic": {"matrix": "T_ego2cam", "direction": "=parent_to_sensor"},
+      "ego_pose": {"rotation": "exposure_pose.q_xyzw", "translation": "exposure_pose.t"}
+    }
+  },
+  "lidars": {
+    "items": "calib.lidar",
+    "fields": {
+      "name": "id",
+      "path": "file",
+      "timestamp": "stamp_us",
+      "extrinsic": {"rotation": "q_xyzw", "translation": "t"}
+    }
+  },
+  "annotations": [
+    {
+      "items": "objects[*]",
+      "fields": {"type": "=box3d", "id": "obj_id", "label": "cls", "center": "pos", "size": "dim_wlh",
+                 "yaw": "heading", "occlusion": "occ"}
+    },
+    {
+      "items": "objects_2d[*]",
+      "fields": {"type": "=box2d", "id": "obj_id", "label": "cls", "camera": "cam", "bbox": "xywh"}
+    },
+    {
+      "items": "lanes[*]",
+      "fields": {"type": "=polyline", "label": "type", "points": "pts"}
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+.cache/
+data/
+__pycache__/
+.venv*/
+build/
+desktop/src-tauri/target/
+real_samples/
+*.key
+*.key.pub
+.env

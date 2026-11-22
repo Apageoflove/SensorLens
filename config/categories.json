@@ -1,0 +1,27 @@
+{
+  "_说明": "类别大类配置。aliases 精确匹配（不区分大小写，空格和横线视为下划线），keywords 做包含匹配。按公司标签体系增删即可，未匹配的归为 other。",
+  "groups": [
+    {"name": "vehicle_4w", "title": "四轮车", "color": "#40a9ff",
+     "aliases": ["car", "suv", "van", "truck", "bus", "trailer", "construction_vehicle", "pickup", "minibus", "vehicle",
+                 "vehicle.car", "vehicle.truck", "vehicle.bus", "vehicle.trailer", "vehicle.construction", "vehicle.emergency",
+                 "汽车", "小汽车", "轿车", "卡车", "货车", "客车", "公交车", "面包车", "工程车", "挂车"],
+     "keywords": ["car", "truck", "bus", "van", "suv", "trailer", "汽车", "卡车", "货车", "客车", "轿车"]},
+    {"name": "vehicle_2w", "title": "两轮车", "color": "#ffa940",
+     "aliases": ["bicycle", "motorcycle", "cyclist", "motorcyclist", "scooter", "tricycle", "moped",
+                 "vehicle.bicycle", "vehicle.motorcycle", "自行车", "摩托车", "电动车", "电瓶车", "三轮车", "骑行者", "两轮车"],
+     "keywords": ["bicycle", "bike", "motor", "cycl", "scooter", "tricycle", "自行车", "摩托", "电动车", "三轮", "骑"]},
+    {"name": "pedestrian", "title": "行人", "color": "#ff4d4f",
+     "aliases": ["pedestrian", "person", "people", "child", "human", "walker", "human.pedestrian.adult",
+                 "human.pedestrian.child", "行人", "人", "儿童"],
+     "keywords": ["pedestrian", "person", "human", "people", "child", "行人", "儿童"]},
+    {"name": "obstacle", "title": "障碍物", "color": "#73d13d",
+     "aliases": ["cone", "traffic_cone", "barrier", "bollard", "barrel", "debris", "obstacle", "animal",
+                 "movable_object.trafficcone", "movable_object.barrier", "movable_object.debris", "static_object.bicycle_rack",
+                 "锥桶", "雪糕筒", "水马", "护栏", "障碍物", "石墩", "动物"],
+     "keywords": ["cone", "barrier", "bollard", "barrel", "debris", "obstacle", "锥", "障碍", "水马", "护栏", "石墩"]},
+    {"name": "road", "title": "车道线/路面", "color": "#e8e8e8",
+     "aliases": ["lane", "lane_solid", "lane_dashed", "curb", "stop_line", "crosswalk", "road_edge",
+                 "车道线", "实线", "虚线", "路沿", "停止线", "斑马线"],
+     "keywords": ["lane", "curb", "line", "crosswalk", "road", "车道", "线", "路沿", "斑马"]}
+  ]
+}

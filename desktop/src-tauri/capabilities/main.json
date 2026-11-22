@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "启动页和本机后端页面都可以调用外壳命令",
+  "windows": ["main"],
+  "local": true,
+  "remote": {
+    "urls": ["http://127.0.0.1:*/*"]
+  },
+  "permissions": [
+    "core:default",
+    "allow-app-info",
+    "allow-start",
+    "allow-choose-data-dir",
+    "allow-change-data-dir",
+    "allow-check-update",
+    "allow-install-update",
+    "allow-pick-save-path",
+    "allow-save-file"
+  ]
+}

@@ -1,0 +1,99 @@
+{
+  "conventions": {
+    "quat_order": "wxyz",
+    "extrinsic_direction": "sensor_to_parent",
+    "camera_axes": "opencv",
+    "time_unit": "s"
+  },
+  "sequence": "demo_seq",
+  "cameras": {
+    "CAM_FRONT": {
+      "width": 1920,
+      "height": 1080,
+      "intrinsic": {
+        "fx": 1150.0,
+        "fy": 1150.0,
+        "cx": 960.0,
+        "cy": 540.0
+      },
+      "distortion": {
+        "model": "opencv",
+        "coeffs": [
+          -0.08,
+          0.02,
+          0.0005,
+          -0.0003,
+          0.0
+        ]
+      },
+      "extrinsic": {
+        "rotation": [
+          0.4911976444,
+          -0.5086500508,
+          0.5086500508,
+          -0.4911976444
+        ],
+        "translation": [
+          1.6,
+          0.0,
+          1.55
+        ]
+      }
+    },
+    "CAM_LEFT": {
+      "width": 1280,
+      "height": 960,
+      "intrinsic": {
+        "fx": 330.0,
+        "fy": 330.0,
+        "cx": 640.0,
+        "cy": 480.0
+      },
+      "distortion": {
+        "model": "fisheye",
+        "coeffs": [
+          0.03,
+          -0.006,
+          0.001,
+          0.0
+        ]
+      },
+      "extrinsic": {
+        "rotation": [
+          0.656059029,
+          -0.7547095802,
+          0.0,
+          -0.0
+        ],
+        "translation": [
+          1.0,
+          0.95,
+          1.1
+        ]
+      }
+    }
+  },
+  "lidars": {
+    "LIDAR_TOP": {
+      "dims": 5,
+      "point_time": {
+        "column": 4,
+        "unit": "s",
+        "mode": "relative"
+      },
+      "extrinsic": {
+        "rotation": [
+          0.999901233,
+          0.0026748554,
+          -0.0043286524,
+          0.0131008482
+        ],
+        "translation": [
+          0.4,
+          0.0,
+          1.95
+        ]
+      }
+    }
+  }
+}

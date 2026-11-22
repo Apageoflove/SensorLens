@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ad-viz</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%231c1c1c'/%3E%3Cpath d='M3 12L8 3l5 9' stroke='%23d9a441' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<aside id="side">
+  <header class="brand">
+    <span class="wordmark">ad-viz</span>
+    <span class="brand-sub">相机 · 雷达 · 标注</span>
+  </header>
+
+  <section>
+    <h2>数据</h2>
+    <label class="drop" id="drop">
+      <input id="files" type="file" multiple>
+      <span id="dropText">选择文件，或拖到窗口任意位置</span>
+      <small>jpg/png · json · bin/pcd/ply · zip/tar</small>
+    </label>
+    <label class="link-file">选择整个文件夹<input id="folder" type="file" webkitdirectory multiple></label>
+    <div class="row">
+      <label>格式</label>
+      <select id="adapter"><option value="auto">自动识别</option></select>
+    </div>
+    <button id="btnUpload" class="primary">上传并解析</button>
+    <div id="progress" class="muted"></div>
+  </section>
+
+  <section id="secFrames" hidden>
+    <h2>帧</h2>
+    <div class="row nav">
+      <button id="prev" class="icon" title="上一帧（←）"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+      <select id="frame"></select>
+      <button id="next" class="icon" title="下一帧（→）"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+    </div>
+    <div class="row"><label>相机</label><select id="camera"></select></div>
+  </section>
+
+  <section id="secLayers" hidden>
+    <h2>显示</h2>
+    <label class="chk"><input id="showPts" type="checkbox" checked><span>点云投影</span></label>
+    <label class="chk"><input id="showAnn" type="checkbox" checked><span>标注</span></label>
+    <div class="indent">
+      <label class="chk"><input id="show3d" type="checkbox" checked><span>3D 框 / 线</span></label>
+      <label class="chk"><input id="show2d" type="checkbox" checked><span>2D 框 / 线</span></label>
+    </div>
+    <label class="chk"><input id="showLabel" type="checkbox" checked><span>标签</span></label>
+    <label class="chk" title="按各传感器时间戳和自车位姿补偿，并对带逐点时间的点云做运动去畸变"><input id="sync" type="checkbox" checked><span>时间同步与运动补偿</span></label>
+
+    <h3>类别 <span class="muted">悬停标注看 id 与属性</span></h3>
+    <div id="cats"></div>
+
+    <h3>点云</h3>
+    <div class="row"><label>着色</label>
+      <select id="colorBy"><option value="depth">深度</option><option value="intensity">强度</option><option value="height">高度</option></select>
+    </div>
+    <div class="row"><label>点大小</label><input id="ptSize" type="range" min="1" max="8" value="2"><output for="ptSize"></output></div>
+    <div class="row"><label>不透明度</label><input id="ptAlpha" type="range" min="5" max="100" value="45"><output for="ptAlpha"></output></div>
+    <div class="row" title="只画一部分点，近处密集的地面点不再糊住画面"><label>密度</label><input id="ptDensity" type="range" min="5" max="100" value="50"><output for="ptDensity"></output></div>
+    <div class="row"><label>色调</label>
+      <select id="ptTone"><option value="soft">柔和</option><option value="vivid">鲜艳</option><option value="mono">单色</option></select>
+    </div>
+    <div class="row"><label>最大深度</label><input id="maxDepth" type="number" min="1" max="500" value="200"><span class="unit">m</span></div>
+  </section>
+
+  <section id="secTools" hidden>
+    <h2>外参检查</h2>
+    <button id="btnCheck">检查当前相机</button>
+    <div class="row">
+      <button id="btnBatch">批量检查前</button>
+      <input id="batchN" type="number" min="1" max="5000" value="50"><span class="unit">帧</span>
+    </div>
+    <a id="lnkRender" class="btn link" target="_blank">下载当前渲染图</a>
+  </section>
+
+  <section id="secBev" hidden>
+    <h2>BEV · 3D · 拼接</h2>
+    <div class="row"><label>帧</label><input id="bevFrames" value="0" placeholder="0-9,15"></div>
+    <div class="row"><label>坐标系</label>
+      <select id="bevTarget"><option value="ego">首帧自车系</option><option value="world">世界系</option></select>
+    </div>
+    <div class="row"><label>范围</label><input id="bevRange" type="number" value="60" min="5" max="500"><span class="unit">m</span></div>
+    <div class="row"><label>体素</label><input id="bevVoxel" type="number" value="0.05" step="0.01" min="0"><span class="unit">m</span></div>
+    <div class="btn-pair">
+      <button id="btnBev">生成 BEV</button>
+      <button id="btn3d">3D 视图</button>
+    </div>
+    <div class="row"><label>3D 着色</label>
+      <select id="color3d"><option value="height">高度</option><option value="intensity">强度</option></select></div>
+    <div class="row"><label>3D 点大小</label><input id="size3d" type="range" min="1" max="6" value="2"><output for="size3d"></output></div>
+    <a id="lnkPly" class="btn link" href="#">下载拼接点云 .ply</a>
+  </section>
+</aside>
+
+<main>
+  <nav id="tabs">
+    <button id="sideToggle" class="icon" title="收起 / 展开侧栏"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    <div class="seg">
+      <button data-tab="cam" class="active">相机</button>
+      <button data-tab="bev">BEV</button>
+      <button data-tab="3d">3D</button>
+    </div>
+  </nav>
+  <div class="stage">
+    <div id="viewCam" class="view">
+      <canvas id="canvas"></canvas>
+      <div id="hud" class="ov"></div>
+      <div id="legend" class="ov"></div>
+      <div id="tip" class="ov" hidden></div>
+      <div id="empty" class="empty">
+        <div class="empty-text">
+          <p class="empty-title">没有加载数据</p>
+          <p>上传图片和对应的 JSON（内参、外参、位姿、标注），可以附带点云；也可以直接上传 zip。只有图片和 2D 标注也能看。</p>
+          <dl>
+            <dt>示例</dt><dd id="sampleList"><code>samples/demo.zip</code> <code>samples/image_only</code> <code>samples/mono3d</code></dd>
+            <dt>格式</dt><dd>见 README 的“标准 JSON 格式”，或用适配器接入现有格式</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+    <div id="viewBev" class="view" hidden>
+      <img id="bevImg" alt="">
+      <div id="bevInfo" class="ov"></div>
+    </div>
+    <div id="view3d" class="view" hidden>
+      <canvas id="gl"></canvas>
+      <canvas id="gl2d"></canvas>
+      <div id="info3d" class="ov"></div>
+    </div>
+    <div id="dropMask"><div>松开以添加文件</div></div>
+  </div>
+  <div id="drawer">
+    <div class="drawer-head"><span>输出</span><button id="drawerToggle" class="icon" title="收起 / 展开"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button></div>
+    <div id="panel"></div>
+  </div>
+  <footer id="statusbar">
+    <span id="status" class="muted"></span>
+    <span id="appInfo" hidden><span id="appVer"></span> <a id="btnUpdate" href="#">检查更新</a> <a id="btnDataDir" href="#">数据目录</a></span>
+    <span class="keys"><kbd>←</kbd><kbd>→</kbd> 切帧　滚轮 缩放　拖动 平移　双击 复位</span>
+  </footer>
+</main>
+<script src="/static/view3d.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+# 构建桌面版和跑测试用的固定版本（CI 与本地 .venv-build 一致）
+numpy==2.1.3
+pillow==12.3.0
+fastapi==0.139.2
+starlette==1.10.0
+uvicorn==0.51.0
+python-multipart==0.0.32
+pyinstaller==6.22.3
+pytest==9.2.0
+httpx==0.28.1
