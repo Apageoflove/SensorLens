@@ -16,21 +16,43 @@
 
   <section>
     <h2>数据</h2>
-    <label class="drop" id="drop">
-      <input id="files" type="file" multiple>
-      <span id="dropText">选择文件，或拖到窗口任意位置</span>
-      <small>jpg/png · json · bin/pcd/ply · zip/tar</small>
-    </label>
-    <label class="link-file">选择整个文件夹<input id="folder" type="file" webkitdirectory multiple></label>
+    <div class="seg mini" id="srcTabs">
+      <button data-src="upload" class="active">上传文件</button>
+      <button data-src="local">打开本机目录</button>
+    </div>
+    <div id="srcUpload">
+      <label class="drop" id="drop">
+        <input id="files" type="file" multiple>
+        <span id="dropText">选择文件，或把文件 / 文件夹拖到窗口</span>
+        <small>图片 · JSON · 点云 · zip/tar，可一起选，也可分几次添加</small>
+      </label>
+      <div class="pick-row">
+        <label class="link-file">添加整个文件夹<input id="folder" type="file" webkitdirectory multiple></label>
+        <a id="btnClear" href="#" hidden>清空</a>
+      </div>
+      <div id="pickInfo" class="muted"></div>
+    </div>
+    <div id="srcLocal" hidden>
+      <div class="row path-row">
+        <input id="localPath" placeholder="例如 E:\data\nuscenes" spellcheck="false">
+        <button id="btnBrowse" hidden>浏览…</button>
+      </div>
+      <p class="hint">原地读取，不复制文件，适合几十 GB 的数据。支持目录、zip、单个 json，以及 nuScenes 数据根目录（含 v1.0-*）。</p>
+    </div>
     <div class="row">
       <label>格式</label>
       <select id="adapter"><option value="auto">自动识别</option></select>
     </div>
-    <button id="btnUpload" class="primary">上传并解析</button>
+    <div class="btn-pair" id="uploadBtns">
+      <button id="btnUpload" class="primary">上传并新建</button>
+      <button id="btnAppend" disabled title="把已选文件补充到当前会话，例如先传了 JSON 再补图片">追加到当前</button>
+    </div>
+    <button id="btnLocal" class="primary" hidden>打开</button>
     <div id="progress" class="muted"></div>
+    <div id="dataInfo"></div>
   </section>
 
-  <section id="secFrames" hidden>
+  <section id="secFrames" class="needs-data">
     <h2>帧</h2>
     <div class="row nav">
       <button id="prev" class="icon" title="上一帧（←）"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
@@ -40,7 +62,7 @@
     <div class="row"><label>相机</label><select id="camera"></select></div>
   </section>
 
-  <section id="secLayers" hidden>
+  <section id="secLayers" class="needs-data">
     <h2>显示</h2>
     <label class="chk"><input id="showPts" type="checkbox" checked><span>点云投影</span></label>
     <label class="chk"><input id="showAnn" type="checkbox" checked><span>标注</span></label>
@@ -52,7 +74,7 @@
     <label class="chk" title="按各传感器时间戳和自车位姿补偿，并对带逐点时间的点云做运动去畸变"><input id="sync" type="checkbox" checked><span>时间同步与运动补偿</span></label>
 
     <h3>类别 <span class="muted">悬停标注看 id 与属性</span></h3>
-    <div id="cats"></div>
+    <div id="cats"><span class="muted">加载数据后显示</span></div>
 
     <h3>点云</h3>
     <div class="row"><label>着色</label>
@@ -67,7 +89,7 @@
     <div class="row"><label>最大深度</label><input id="maxDepth" type="number" min="1" max="500" value="200"><span class="unit">m</span></div>
   </section>
 
-  <section id="secTools" hidden>
+  <section id="secTools" class="needs-data">
     <h2>外参检查</h2>
     <button id="btnCheck">检查当前相机</button>
     <div class="row">
@@ -77,7 +99,7 @@
     <a id="lnkRender" class="btn link" target="_blank">下载当前渲染图</a>
   </section>
 
-  <section id="secBev" hidden>
+  <section id="secBev" class="needs-data">
     <h2>BEV · 3D · 拼接</h2>
     <div class="row"><label>帧</label><input id="bevFrames" value="0" placeholder="0-9,15"></div>
     <div class="row"><label>坐标系</label>
@@ -101,6 +123,7 @@
     <button id="sideToggle" class="icon" title="收起 / 展开侧栏"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
     <div class="seg">
       <button data-tab="cam" class="active">相机</button>
+      <button data-tab="grid" title="当前帧的所有相机">环视</button>
       <button data-tab="bev">BEV</button>
       <button data-tab="3d">3D</button>
     </div>
@@ -114,7 +137,11 @@
       <div id="empty" class="empty">
         <div class="empty-text">
           <p class="empty-title">没有加载数据</p>
-          <p>上传图片和对应的 JSON（内参、外参、位姿、标注），可以附带点云；也可以直接上传 zip。只有图片和 2D 标注也能看。</p>
+          <p>把图片、JSON（内参、外参、位姿、标注）和可选的点云一起选上，或直接选整个文件夹 / zip。
+            图片和 JSON 不必分开传：JSON 里写的图片路径（或文件名、相机名）会自动对上。
+            分几次选的文件会累加；漏了图片，可以之后“追加到当前”会话。</p>
+          <p>文件夹里的无关文件（文档、日志、缓存、隐藏文件等）会自动忽略，不会上传。
+            数据很大（几 GB 以上）时用“打开本机目录”，原地读取不复制。只有图片也能浏览。</p>
           <dl>
             <dt>示例</dt><dd id="sampleList"><code>samples/demo.zip</code> <code>samples/image_only</code> <code>samples/mono3d</code></dd>
             <dt>格式</dt><dd>见 README 的“标准 JSON 格式”，或用适配器接入现有格式</dd>
@@ -131,6 +158,7 @@
       <canvas id="gl2d"></canvas>
       <div id="info3d" class="ov"></div>
     </div>
+    <div id="viewGrid" class="view" hidden><div id="grid"></div></div>
     <div id="dropMask"><div>松开以添加文件</div></div>
   </div>
   <div id="drawer">

@@ -13,7 +13,8 @@ from adviz.schema import parse_frame
 def test_dataset_index(demo_ds):
     assert [r.frame_id for r in demo_ds.frames] == ["demo_000000", "demo_000001", "demo_000002"]
     assert demo_ds.skipped == [("calib.json", "被 extends 引用的公共配置，不作为单独的帧")]
-    assert demo_ds.frames[0].cameras == ["CAM_FRONT", "CAM_LEFT"]
+    assert demo_ds.frames[0].cameras == ["CAM_FRONT", "CAM_FRONT_LEFT", "CAM_FRONT_RIGHT", "CAM_LEFT", "CAM_RIGHT",
+                                         "CAM_BACK"]
 
 
 def test_lidar_points_on_box_project_into_box_outline(demo_ds):
@@ -75,7 +76,7 @@ def test_stitch_requires_pose(demo_ds):
         f.T_world_ego = saved
 
 
-@pytest.mark.parametrize("cam", ["CAM_FRONT", "CAM_LEFT"])
+@pytest.mark.parametrize("cam", ["CAM_FRONT", "CAM_FRONT_LEFT", "CAM_FRONT_RIGHT", "CAM_LEFT", "CAM_RIGHT", "CAM_BACK"])
 def test_calibcheck_accepts_correct_extrinsics(demo_ds, cam):
     r = check_camera(demo_ds, demo_ds.get_frame(0), cam)
     assert r["verdict"] == "ok", r["message"]

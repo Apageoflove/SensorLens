@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from .adapter import load_adapters
 from .calibcheck import check_camera
 from .categories import load_categories
-from .dataset import CompositeStore, Dataset, DirStore, ZipStore, parse_frame_spec
+from .dataset import Dataset, open_dataset, parse_frame_spec
 from .pointcloud import write_ply
 from .render import (annotations_in, bev_png, filter_groups, overlay, overlay_to_json, render_png, scene_frames,
                      stitch)
@@ -49,7 +49,7 @@ for d in (SESSIONS, TMP):
 # 上传的大文件会先落到临时目录，这里固定到数据目录内，避免写到系统盘。
 tempfile.tempdir = str(TMP)
 
-app = FastAPI(title="ad-viz", version="0.3.1")
+app = FastAPI(title="ad-viz", version="0.4.0")
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
 
@@ -121,10 +121,17 @@ def _safe_rel(name: str) -> str:
     return "/".join(parts)
 
 
-def _build(sdir: Path, adapter: str) -> Dataset:
-    files = sdir / "files"
-    stores = [DirStore(files)] + [ZipStore(z) for z in sorted(files.rglob("*.zip"))]
-    return Dataset(CompositeStore(stores), adapter, _adapters(), cache_path=sdir / "index.json")
+def _meta(sdir: Path) -> dict:
+    return json.loads((sdir / "meta.json").read_text(encoding="utf-8"))
+
+
+def _build(sdir: Path, meta: dict) -> Dataset:
+    # source：直接打开本机目录（不复制）；否则打开上传到会话目录里的文件
+    src = Path(meta["source"]) if meta.get("source") else sdir / "files"
+    if not src.exists():
+        raise FileNotFoundError(f"数据位置不存在或已被移走：{src}")
+    return open_dataset(src, meta.get("adapter", "auto"), _adapters(), cache_path=sdir / "index.json",
+                        nusc_cache=DATA / "cache" / "nuscenes")
 
 
 _build_locks: dict[str, threading.Lock] = {}
@@ -145,15 +152,15 @@ def _session(sid: str) -> Dataset:
         sdir = SESSIONS / sid
         if not (sdir / "meta.json").exists():
             raise HTTPException(404, "会话不存在")
-        meta = json.loads((sdir / "meta.json").read_text(encoding="utf-8"))
-        ds = _build(sdir, meta.get("adapter", "auto"))
+        ds = _build(sdir, _meta(sdir))
         with _lock:
             _sessions[sid] = ds
         return ds
 
 
 def _summary(sid: str, ds: Dataset) -> dict:
-    return {"session_id": sid,
+    meta = _meta(SESSIONS / sid)
+    return {"session_id": sid, "source": meta.get("source"),
             "frames": [{"index": i, "frame_id": r.frame_id, "source": r.json_name, "cameras": r.cameras,
                         "lidars": r.lidars, "sequence": r.sequence, "timestamp": r.timestamp,
                         "has_pose": bool(r.poses)} for i, r in enumerate(ds.frames)],
@@ -192,39 +199,117 @@ async def create_session(request: Request):
     return await run_in_threadpool(_create_session, files, adapter)
 
 
+def _save_uploads(fdir: Path, files: list) -> None:
+    fdir.mkdir(parents=True, exist_ok=True)
+    for f in files:
+        rel = _safe_rel(f.filename or "upload")
+        dst = fdir / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with dst.open("wb") as out:
+            shutil.copyfileobj(f.file, out, 4 * 1024 * 1024)
+        low = rel.lower()
+        if low.endswith((".tar", ".tar.gz", ".tgz")):
+            target = dst.parent / (dst.name.split(".")[0] + "_extracted")
+            n = 1
+            while target.exists():
+                n += 1
+                target = dst.parent / (dst.name.split(".")[0] + f"_extracted{n}")
+            try:
+                with tarfile.open(dst) as tf:
+                    tf.extractall(target, filter="data")
+            except tarfile.TarError as e:
+                raise HTTPException(400, f"{rel}: tar 包损坏或格式不支持（{e}）") from e
+            dst.unlink()
+
+
 def _create_session(files: list, adapter: str) -> dict:
     sid = uuid.uuid4().hex
     sdir = SESSIONS / sid
-    fdir = sdir / "files"
-    fdir.mkdir(parents=True)
     try:
-        for f in files:
-            rel = _safe_rel(f.filename or "upload")
-            dst = fdir / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            with dst.open("wb") as out:
-                shutil.copyfileobj(f.file, out, 4 * 1024 * 1024)
-            low = rel.lower()
-            if low.endswith((".tar", ".tar.gz", ".tgz")):
-                target = dst.parent / (dst.name.split(".")[0] + "_extracted")
-                n = 1
-                while target.exists():
-                    n += 1
-                    target = dst.parent / (dst.name.split(".")[0] + f"_extracted{n}")
-                try:
-                    with tarfile.open(dst) as tf:
-                        tf.extractall(target, filter="data")
-                except tarfile.TarError as e:
-                    raise HTTPException(400, f"{rel}: tar 包损坏或格式不支持（{e}）") from e
-                dst.unlink()
-        (sdir / "meta.json").write_text(json.dumps({"adapter": adapter}), encoding="utf-8")
-        ds = _build(sdir, adapter)
+        _save_uploads(sdir / "files", files)
+        meta = {"adapter": adapter}
+        (sdir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        ds = _build(sdir, meta)
     except Exception:
         shutil.rmtree(sdir, ignore_errors=True)
         raise
     with _lock:
         _sessions[sid] = ds
     return _summary(sid, ds)
+
+
+@app.post("/api/sessions/local")
+async def open_local(request: Request):
+    """打开本机上的目录 / zip / json，原地读取不复制。大数据集（几十 GB）不必经过浏览器上传。"""
+    # 只接受 application/json：跨站网页能发出的“简单请求”不能带这个类型，避免别的网页替用户打开本机任意目录
+    if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+        raise HTTPException(415, "需要 application/json")
+    body = await request.json()
+    path = str(body.get("path") or "").strip().strip('"')
+    adapter = str(body.get("adapter") or "auto")
+    if not path:
+        raise HTTPException(400, "请填写本机路径")
+    p = Path(os.path.expandvars(os.path.expanduser(path)))
+    if not p.is_absolute():
+        raise HTTPException(400, "请填写完整路径，例如 E:\\data\\seq01")
+    if not p.exists():
+        raise HTTPException(404, f"路径不存在：{p}")
+    if p.is_file() and p.suffix.lower() not in (".zip", ".json"):
+        raise HTTPException(400, "只能打开目录、.zip 或 .json")
+    if adapter != "auto" and adapter not in _adapters():
+        raise HTTPException(400, f"适配器 {adapter!r} 不存在")
+    return await run_in_threadpool(_open_local, p.resolve(), adapter)
+
+
+def _open_local(p: Path, adapter: str) -> dict:
+    sid = uuid.uuid4().hex
+    sdir = SESSIONS / sid
+    sdir.mkdir(parents=True)
+    try:
+        meta = {"adapter": adapter, "source": str(p)}
+        (sdir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        ds = _build(sdir, meta)
+    except Exception:
+        shutil.rmtree(sdir, ignore_errors=True)
+        raise
+    with _lock:
+        _sessions[sid] = ds
+    return _summary(sid, ds)
+
+
+def _drop(sid: str) -> None:
+    with _lock:
+        ds = _sessions.pop(sid, None)
+    if ds is not None and hasattr(ds.store, "close"):
+        ds.store.close()
+
+
+@app.post("/api/sessions/{sid}/files")
+async def append_files(sid: str, request: Request):
+    """往已有会话里追加文件（例如先传了 JSON，再补图片），然后重建索引。"""
+    if not _SID.match(sid) or not (SESSIONS / sid / "meta.json").exists():
+        raise HTTPException(404, "会话不存在")
+    if _meta(SESSIONS / sid).get("source"):
+        raise HTTPException(400, "这个会话直接读取本机目录，把文件放进该目录后点“重新扫描”即可")
+    form = await request.form(max_files=MAX_UPLOAD_FILES, max_fields=MAX_UPLOAD_FILES + 100)
+    files = [f for f in form.getlist("files") if hasattr(f, "filename")]
+    if not files:
+        raise HTTPException(400, "没有上传文件")
+
+    def run():
+        _drop(sid)
+        _save_uploads(SESSIONS / sid / "files", files)
+        return _summary(sid, _session(sid))
+    return await run_in_threadpool(run)
+
+
+@app.post("/api/sessions/{sid}/rescan")
+def rescan(sid: str):
+    """重新扫描数据位置；文件没变时索引直接来自缓存。"""
+    if not _SID.match(sid):
+        raise HTTPException(400, "非法会话 ID")
+    _drop(sid)
+    return _summary(sid, _session(sid))
 
 
 _SAMPLE_NAMES = {"demo": "demo.zip", "image_only": "image_only", "mono3d": "mono3d", "vendor_demo": "vendor_demo"}
@@ -250,8 +335,9 @@ def open_sample(name: str):
         else:
             fdir.mkdir(parents=True)
             shutil.copy2(src, fdir / src.name)
-        (sdir / "meta.json").write_text(json.dumps({"adapter": "auto"}), encoding="utf-8")
-        ds = _build(sdir, "auto")
+        meta = {"adapter": "auto"}
+        (sdir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        ds = _build(sdir, meta)
     except Exception:
         shutil.rmtree(sdir, ignore_errors=True)
         raise
@@ -315,11 +401,13 @@ def frame_overlay(sid: str, idx: int, cam: str, lidar: bool = True, ann: bool = 
 def frame_render(sid: str, idx: int, cam: str, lidar: bool = True, ann: bool = True, sync: bool = True,
                  color_by: str = "depth", groups: str | None = None, point_size: int = Query(2, ge=1, le=8),
                  alpha: float = Query(0.45, ge=0.0, le=1.0), density: float = Query(0.5, ge=0.0, le=1.0),
-                 tone: str = Query("soft", pattern="^(soft|vivid|mono)$")):
+                 tone: str = Query("soft", pattern="^(soft|vivid|mono)$"),
+                 max_w: int | None = Query(None, ge=64, le=8192)):
     ds = _session(sid)
     f = ds.get_frame(idx)
     data = render_png(ds, f, cam, point_size=point_size, lidars=lidar, annotations=ann, color_by=color_by,
-                      sync=sync, categories=_cats(), groups=_groups(groups), alpha=alpha, density=density, tone=tone)
+                      sync=sync, categories=_cats(), groups=_groups(groups), alpha=alpha, density=density, tone=tone,
+                      max_w=max_w)
     fname = f"{f.frame_id or idx}_{cam}.jpg"
     return Response(data, media_type="image/jpeg",
                     headers={"Content-Disposition": f"inline; filename*=UTF-8''{quote(fname)}"})

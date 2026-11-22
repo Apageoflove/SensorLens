@@ -20,6 +20,14 @@
    "image": "images/CAM_FRONT/000002.jpg",
    "timestamp": 1700000000.254
   },
+  "CAM_FRONT_LEFT": {
+   "image": "images/CAM_FRONT_LEFT/000002.jpg",
+   "timestamp": 1700000000.269
+  },
+  "CAM_FRONT_RIGHT": {
+   "image": "images/CAM_FRONT_RIGHT/000002.jpg",
+   "timestamp": 1700000000.239
+  },
   "CAM_LEFT": {
    "image": "images/CAM_LEFT/000002.jpg",
    "timestamp": 1700000000.281,
@@ -36,6 +44,14 @@
      0.0
     ]
    }
+  },
+  "CAM_RIGHT": {
+   "image": "images/CAM_RIGHT/000002.jpg",
+   "timestamp": 1700000000.231
+  },
+  "CAM_BACK": {
+   "image": "images/CAM_BACK/000002.jpg",
+   "timestamp": 1700000000.203
   }
  },
  "lidars": {
@@ -337,6 +353,46 @@
    "yaw": -0.03,
    "attributes": {
     "track_id": 13,
+    "occlusion": 0
+   }
+  },
+  {
+   "type": "box3d",
+   "id": "obj14",
+   "label": "car",
+   "center": [
+    -21.1045,
+    -3.1684,
+    0.8
+   ],
+   "size": [
+    4.5,
+    1.9,
+    1.6
+   ],
+   "yaw": -0.03,
+   "attributes": {
+    "track_id": 14,
+    "occlusion": 0
+   }
+  },
+  {
+   "type": "box3d",
+   "id": "obj15",
+   "label": "car",
+   "center": [
+    -27.9934,
+    0.64,
+    0.8
+   ],
+   "size": [
+    4.6,
+    1.9,
+    1.6
+   ],
+   "yaw": -0.01,
+   "attributes": {
+    "track_id": 15,
     "occlusion": 0
    }
   },
@@ -1542,6 +1598,118 @@
   },
   {
    "type": "box2d",
+   "camera": "CAM_FRONT_LEFT",
+   "id": "obj1",
+   "label": "car",
+   "bbox": [
+    1231.1,
+    319.2,
+    1279.0,
+    479.3
+   ],
+   "attributes": {
+    "track_id": 1,
+    "occlusion": 0
+   }
+  },
+  {
+   "type": "box2d",
+   "camera": "CAM_FRONT_LEFT",
+   "id": "obj6",
+   "label": "cyclist",
+   "bbox": [
+    873.2,
+    300.7,
+    1008.4,
+    449.0
+   ],
+   "attributes": {
+    "track_id": 6,
+    "occlusion": 0
+   }
+  },
+  {
+   "type": "box2d",
+   "camera": "CAM_FRONT_LEFT",
+   "id": "obj8",
+   "label": "pedestrian",
+   "bbox": [
+    0.0,
+    278.7,
+    104.2,
+    558.5
+   ],
+   "attributes": {
+    "track_id": 8,
+    "occlusion": 0
+   }
+  },
+  {
+   "type": "box2d",
+   "camera": "CAM_FRONT_LEFT",
+   "id": "obj9",
+   "label": "child",
+   "bbox": [
+    454.6,
+    347.7,
+    523.5,
+    478.1
+   ],
+   "attributes": {
+    "track_id": 9,
+    "occlusion": 1
+   }
+  },
+  {
+   "type": "box2d",
+   "camera": "CAM_FRONT_RIGHT",
+   "id": "obj0",
+   "label": "car",
+   "bbox": [
+    77.5,
+    297.4,
+    677.4,
+    622.7
+   ],
+   "attributes": {
+    "track_id": 0,
+    "occlusion": 0
+   }
+  },
+  {
+   "type": "box2d",
+   "camera": "CAM_FRONT_RIGHT",
+   "id": "obj7",
+   "label": "motorcycle",
+   "bbox": [
+    99.5,
+    318.7,
+    191.2,
+    393.9
+   ],
+   "attributes": {
+    "track_id": 7,
+    "occlusion": 0
+   }
+  },
+  {
+   "type": "box2d",
+   "camera": "CAM_FRONT_RIGHT",
+   "id": "obj13",
+   "label": "barrier",
+   "bbox": [
+    0.0,
+    337.6,
+    13.1,
+    368.0
+   ],
+   "attributes": {
+    "track_id": 13,
+    "occlusion": 0
+   }
+  },
+  {
+   "type": "box2d",
    "camera": "CAM_LEFT",
    "id": "obj1",
    "label": "car",
@@ -1665,6 +1833,118 @@
    ],
    "attributes": {
     "track_id": 12,
+    "occlusion": 0
+   }
+  },
+  {
+   "type": "box2d",
+   "camera": "CAM_RIGHT",
+   "id": "obj0",
+   "label": "car",
+   "bbox": [
+    187.2,
+    402.8,
+    402.9,
+    551.5
+   ],
+   "attributes": {
+    "track_id": 0,
+    "occlusion": 0
+   }
+  },
+  {
+   "type": "box2d",
+   "camera": "CAM_RIGHT",
+   "id": "obj3",
+   "label": "bus",
+   "bbox": [
+    117.5,
+    445.7,
+    147.8,
+    486.8
+   ],
+   "attributes": {
+    "track_id": 3,
+    "occlusion": 1
+   }
+  },
+  {
+   "type": "box2d",
+   "camera": "CAM_RIGHT",
+   "id": "obj7",
+   "label": "motorcycle",
+   "bbox": [
+    211.9,
+    447.5,
+    243.1,
+    483.6
+   ],
+   "attributes": {
+    "track_id": 7,
+    "occlusion": 0
+   }
+  },
+  {
+   "type": "box2d",
+   "camera": "CAM_RIGHT",
+   "id": "obj13",
+   "label": "barrier",
+   "bbox": [
+    179.8,
+    466.3,
+    191.0,
+    480.4
+   ],
+   "attributes": {
+    "track_id": 13,
+    "occlusion": 0
+   }
+  },
+  {
+   "type": "box2d",
+   "camera": "CAM_RIGHT",
+   "id": "obj14",
+   "label": "car",
+   "bbox": [
+    1127.1,
+    458.0,
+    1170.1,
+    502.9
+   ],
+   "attributes": {
+    "track_id": 14,
+    "occlusion": 0
+   }
+  },
+  {
+   "type": "box2d",
+   "camera": "CAM_BACK",
+   "id": "obj14",
+   "label": "car",
+   "bbox": [
+    476.9,
+    311.1,
+    573.3,
+    373.5
+   ],
+   "attributes": {
+    "track_id": 14,
+    "occlusion": 0
+   }
+  },
+  {
+   "type": "box2d",
+   "camera": "CAM_BACK",
+   "id": "obj15",
+   "label": "car",
+   "bbox": [
+    630.9,
+    311.1,
+    684.7,
+    356.3
+   ],
+   "attributes": {
+    "track_id": 15,
     "occlusion": 0
    }
   }

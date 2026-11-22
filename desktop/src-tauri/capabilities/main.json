@@ -15,6 +15,7 @@
     "allow-change-data-dir",
     "allow-check-update",
     "allow-install-update",
+    "allow-pick-folder",
     "allow-pick-save-path",
     "allow-save-file"
   ]

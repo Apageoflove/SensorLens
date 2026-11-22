@@ -6,7 +6,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 root = Path(SPECPATH).parent
 datas = [(str(root / d), d) for d in ("web", "adapters", "config", "samples")]
-hidden = collect_submodules("uvicorn") + ["python_multipart", "multipart"]
+hidden = collect_submodules("uvicorn") + collect_submodules("adviz") + ["python_multipart", "multipart"]
 
 a = Analysis([str(root / "packaging" / "backend_main.py")], pathex=[str(root)], datas=datas, hiddenimports=hidden,
              excludes=["tkinter", "matplotlib", "scipy", "pytest", "IPython", "PyQt5", "PyQt6", "PySide6"],

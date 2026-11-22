@@ -1,7 +1,7 @@
 "use strict";
 const $ = (s) => document.querySelector(s);
 const S = { sid: null, frames: [], idx: 0, cam: null, ov: null, img: null, bins: [], cats: [],
-            hidden: new Set(), dropped: [], zoom: 1, panX: 0, panY: 0, reqId: 0, scene: null, v3d: null };
+            hidden: new Set(), source: null, zoom: 1, panX: 0, panY: 0, reqId: 0, scene: null, v3d: null };
 const NBINS = 48;
 const canvas = $("#canvas");
 const ctx = canvas.getContext("2d");
@@ -45,21 +45,81 @@ async function loadAdapters() {
   } catch (e) { status("读取适配器失败: " + e.message, "err"); }
 }
 
-function upload() {
-  const files = [...$("#files").files, ...$("#folder").files, ...S.dropped];
-  if (!files.length) { status("请先选择文件", "warn"); return; }
+// 与后端 dataset.py 的过滤规则一致：只上传可能用得上的文件，文件夹里的文档、日志、缓存、隐藏文件都不上传
+const KIND = [[/\.(jpe?g|png|bmp|webp)$/i, "image"], [/\.json$/i, "json"], [/\.(bin|pcd|ply|npy)$/i, "points"],
+              [/\.(zip|tar|tgz|tar\.gz)$/i, "archive"]];
+const JUNK_DIR = /(^|\/)(\.[^/]*|__MACOSX|__pycache__|node_modules|venv|\$RECYCLE\.BIN|System Volume Information)\//i;
+const MAX_FRAME_JSON = 64 * 1048576;
+const BIG_UPLOAD = 2 * 1073741824;
+const pick = { files: new Map(), junk: 0, junkBytes: 0, junkExt: {}, bigJson: [] };
+const mb = (b) => b >= 1073741824 ? (b / 1073741824).toFixed(1) + " GB" : (b / 1048576).toFixed(1) + " MB";
+
+function kindOf(path) {
+  const base = path.split("/").pop();
+  if (base.startsWith(".") || /^(thumbs\.db|desktop\.ini)$/i.test(base) || JUNK_DIR.test(path)) return null;
+  const k = KIND.find(([re]) => re.test(base));
+  return k ? k[1] : null;
+}
+function addFiles(list) {
+  let added = 0;
+  for (const { file, path } of list) {
+    const p = path.replace(/\\/g, "/").replace(/^\/+/, "");
+    const k = kindOf(p);
+    if (!k) {
+      pick.junk++; pick.junkBytes += file.size;
+      const ext = (p.match(/\.[^./]+$/) || ["(无扩展名)"])[0].toLowerCase();
+      pick.junkExt[ext] = (pick.junkExt[ext] || 0) + 1;
+      continue;
+    }
+    if (k === "json" && file.size > MAX_FRAME_JSON) { pick.bigJson.push(`${p}（${mb(file.size)}）`); continue; }
+    if (!pick.files.has(p)) added++;
+    pick.files.set(p, { file, kind: k });
+  }
+  updatePickInfo();
+  return added;
+}
+function clearPick() {
+  pick.files.clear(); pick.junk = 0; pick.junkBytes = 0; pick.junkExt = {}; pick.bigJson = [];
+  $("#files").value = ""; $("#folder").value = "";
+  updatePickInfo();
+}
+function updatePickInfo() {
+  const n = pick.files.size, cnt = { image: 0, json: 0, points: 0, archive: 0 };
+  let bytes = 0;
+  for (const { file, kind } of pick.files.values()) { cnt[kind]++; bytes += file.size; }
+  $("#drop").classList.toggle("has", n > 0);
+  $("#dropText").textContent = n ? `已选 ${n} 个文件，共 ${mb(bytes)}（可继续添加）` : "选择文件，或把文件 / 文件夹拖到窗口";
+  $("#btnClear").hidden = !n && !pick.junk;
+  const lines = [];
+  if (n) lines.push(`图片 ${cnt.image} · JSON ${cnt.json} · 点云 ${cnt.points}` + (cnt.archive ? ` · 压缩包 ${cnt.archive}` : ""));
+  if (n && !cnt.json && !cnt.archive) lines.push(`<span class="warn">没有 JSON：只浏览图片；有标定和标注时请一起选上</span>`);
+  if (n && cnt.json && !cnt.image && !cnt.archive) lines.push(`<span class="warn">没有图片：可以先上传，再用“追加到当前”补图片</span>`);
+  if (pick.junk) {
+    const top = Object.entries(pick.junkExt).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, v]) => `${k} ${v}`).join("，");
+    lines.push(`已忽略 ${pick.junk} 个无关文件（${mb(pick.junkBytes)}：${esc(top)}）`);
+  }
+  if (pick.bigJson.length) {
+    lines.push(`<span class="warn">已排除 ${pick.bigJson.length} 个超大 JSON（不像单帧标注，如 nuScenes 元数据表，` +
+      `请用“打开本机目录”）：${esc(pick.bigJson.slice(0, 2).join("、"))}</span>`);
+  }
+  if (bytes > BIG_UPLOAD) lines.push(`<span class="warn">超过 ${mb(BIG_UPLOAD)}，上传会把文件复制一份，建议改用“打开本机目录”原地读取</span>`);
+  $("#pickInfo").innerHTML = lines.join("<br>");
+}
+
+function sendFiles(url, done) {
+  if (!pick.files.size) { status(pick.junk ? "选中的都是无关文件，没有可上传的数据" : "请先选择文件", "warn"); return; }
   const fd = new FormData();
-  for (const f of files) fd.append("files", f, f.webkitRelativePath || f.name);
+  for (const [path, { file }] of pick.files) fd.append("files", file, path);
   fd.append("adapter", $("#adapter").value);
   const xhr = new XMLHttpRequest();
-  xhr.open("POST", "/api/sessions");
-  $("#btnUpload").disabled = true;
+  xhr.open("POST", url);
+  setBusy(true);
   xhr.upload.onprogress = (e) => {
-    if (e.lengthComputable) $("#progress").textContent = `上传 ${(e.loaded / 1048576).toFixed(1)} / ${(e.total / 1048576).toFixed(1)} MB`;
+    if (e.lengthComputable) $("#progress").textContent = `上传 ${mb(e.loaded)} / ${mb(e.total)}`;
   };
   xhr.upload.onload = () => { $("#progress").textContent = "上传完成，正在建立索引…"; };
   xhr.onloadend = () => {
-    $("#btnUpload").disabled = false;
+    setBusy(false);
     let body = null;
     try { body = JSON.parse(xhr.responseText); } catch (_) { /* 非 JSON */ }
     if (xhr.status !== 200) {
@@ -67,32 +127,84 @@ function upload() {
       status("上传失败: " + (body?.detail || xhr.statusText || "网络错误"), "err");
       return;
     }
-    S.dropped = []; $("#files").value = ""; $("#folder").value = ""; updateDropText();
-    onSession(body);
+    clearPick();
+    done(body);
   };
   xhr.send(fd);
 }
+function setBusy(b) {
+  for (const id of ["#btnUpload", "#btnAppend", "#btnLocal"]) $(id).disabled = b || (id === "#btnAppend" && !canAppend());
+}
+const canAppend = () => !!S.sid && !S.source;
+const upload = () => sendFiles("/api/sessions", onSession);
+const appendFiles = () => sendFiles(`/api/sessions/${S.sid}/files`, (s) => onSession(s, true));
 
-function onSession(s) {
-  S.sid = s.session_id; S.frames = s.frames; S.cats = s.categories || [];
-  history.replaceState(null, "", "?s=" + S.sid);
-  const nSeq = new Set(s.frames.map((f) => f.sequence)).size;
-  $("#progress").textContent = `${s.frames.length} 帧` + (nSeq > 1 ? `，${nSeq} 个序列` : "") +
-    (s.skipped.length ? `，跳过 ${s.skipped.length} 个 JSON` : "") + (s.index_info?.cached ? "（索引来自缓存）" : "");
-  const sel = $("#frame"); sel.innerHTML = "";
-  s.frames.forEach((f, i) => {
-    const o = document.createElement("option");
-    o.value = i; o.textContent = `${i}: ${f.frame_id}`; sel.appendChild(o);
-  });
-  for (const id of ["#secFrames", "#secLayers", "#secTools", "#secBev"]) $(id).hidden = !s.frames.length;
-  if (s.skipped.length) {
-    $("#panel").innerHTML = `<table><tr><th>跳过的文件</th><th>原因</th></tr>${s.skipped.map((k) =>
-      `<tr><td>${esc(k.file)}</td><td class="warn">${esc(k.reason)}</td></tr>`).join("")}</table>`;
-  } else $("#panel").innerHTML = "";
-  if (s.frames.length) selectFrame(0, true);
-  else status("没有可用的帧，请查看下方原因", "warn");
+async function openLocal(path) {
+  path = (path ?? $("#localPath").value).trim();
+  if (!path) { status("请填写本机路径", "warn"); return; }
+  $("#localPath").value = path;
+  localStorage.setItem("adviz.localPath", path);
+  setBusy(true);
+  $("#progress").textContent = "正在扫描并建立索引…（nuScenes 完整数据首次约需 1 分钟，之后读缓存）";
+  try {
+    const r = await api("/api/sessions/local", { method: "POST", headers: { "Content-Type": "application/json" },
+                                                 body: JSON.stringify({ path, adapter: $("#adapter").value }) });
+    onSession(await r.json());
+  } catch (e) { $("#progress").textContent = ""; status("打开失败: " + e.message, "err"); }
+  setBusy(false);
+}
+async function rescan() {
+  $("#progress").textContent = "重新扫描…";
+  try { onSession(await (await api(`/api/sessions/${S.sid}/rescan`, { method: "POST" })).json(), true); }
+  catch (e) { $("#progress").textContent = ""; status("重新扫描失败: " + e.message, "err"); }
 }
 
+function sessionInfo(s) {
+  const ii = s.index_info || {}, out = [];
+  if (s.source) out.push(`本机：<span title="${esc(s.source)}">${esc(s.source.length > 40 ? "…" + s.source.slice(-39) : s.source)}</span>`);
+  if (ii.source === "nuscenes") {
+    const nu = ii.nuscenes;
+    out.push(`nuScenes ${esc(nu.version)}：${nu.frames} 个关键帧有数据（共 ${nu.keyframes_total}）`);
+    const pres = Object.entries(nu.present).map(([k, v]) => `${k} ${v}`).join("，");
+    if (pres) out.push(`有文件：${esc(pres)}`);
+    if (nu.note) out.push(`<span class="warn">${esc(nu.note)}</span>`);
+  }
+  if (ii.image_only) out.push(`<span class="warn">没有可用的 JSON，按图片浏览（无标定、无标注）</span>`);
+  if (ii.ignored_files?.count) out.push(`忽略无关文件 ${ii.ignored_files.count} 个（${mb(ii.ignored_files.bytes)}）`);
+  if (ii.missing_images) {
+    out.push(`<span class="warn">${ii.missing_images.frames} 帧找不到部分相机的图片，例如 ${esc(ii.missing_images.examples.slice(0, 2)
+      .map(([f, c]) => `${f}: ${c.join("/")}`).join("；"))}</span>`);
+  }
+  if (ii.unused_images) out.push(`${ii.unused_images.count} 张图片没有被任何 JSON 引用`);
+  if (s.source) out.push(`<a href="#" id="lnkRescan">重新扫描</a>`);
+  return out.join("<br>");
+}
+
+function onSession(s, keepView = false) {
+  const prevIdx = S.idx, prevCam = S.cam;
+  S.sid = s.session_id; S.frames = s.frames; S.cats = s.categories || []; S.source = s.source || null;
+  history.replaceState(null, "", "?s=" + S.sid);
+  document.body.classList.toggle("has-data", s.frames.length > 0);
+  setBusy(false);
+  const nSeq = new Set(s.frames.map((f) => f.sequence)).size;
+  const nCam = new Set(s.frames.flatMap((f) => f.cameras)).size;
+  $("#progress").textContent = `${s.frames.length} 帧` + (nSeq > 1 ? `，${nSeq} 个序列` : "") + (nCam ? `，${nCam} 个相机` : "") +
+    (s.skipped.length ? `，跳过 ${s.skipped.length} 个 JSON` : "") + (s.index_info?.cached ? "（索引来自缓存）" : "");
+  $("#dataInfo").innerHTML = sessionInfo(s);
+  $("#lnkRescan")?.addEventListener("click", (e) => { e.preventDefault(); rescan(); });
+  const sel = $("#frame");
+  const multiSeq = nSeq > 1;
+  sel.innerHTML = s.frames.map((f, i) => `<option value="${i}">${i}: ${esc(f.frame_id)}${multiSeq && !String(f.frame_id).includes(f.sequence) ? " · " + esc(f.sequence) : ""}</option>`).join("");
+  buildCats(null);
+  if (s.skipped.length) {
+    const rows = s.skipped.slice(0, 500);
+    $("#panel").innerHTML = `<table><tr><th>跳过的文件${s.skipped.length > rows.length ? `（只列前 ${rows.length} 个，共 ${s.skipped.length}）` : ""}</th><th>原因</th></tr>${rows.map((k) =>
+      `<tr><td>${esc(k.file)}</td><td class="warn">${esc(k.reason)}</td></tr>`).join("")}</table>`;
+  } else $("#panel").innerHTML = "";
+  if (s.frames.length) {
+    if (keepView && prevIdx < s.frames.length) { S.cam = prevCam; selectFrame(prevIdx); } else selectFrame(0, true);
+  } else { clearView(); status("没有可用的帧，请查看下方原因", "warn"); }
+}
 // ---------------- 帧 / 相机 ----------------
 function selectFrame(i, fit = false) {
   if (i < 0 || i >= S.frames.length) return;
@@ -105,6 +217,7 @@ function selectFrame(i, fit = false) {
   if (S.cam) cs.value = S.cam;
   loadView(fit || S.cam !== prev);
   if (!$("#view3d").hidden) load3D(String(i));
+  refreshGrid();
 }
 
 function groupsParam() {
@@ -188,6 +301,8 @@ function buildBins() {
 // ---------------- 类别筛选 ----------------
 function buildCats(groups) {
   const box = $("#cats");
+  // 还没拿到叠加数据时先按会话里的类别配置列出来，不必等第一帧加载完
+  if (groups === null) groups = S.cats;
   if (!groups.length) { box.innerHTML = '<span class="muted">本帧没有标注</span>'; return; }
   box.innerHTML = groups.map((g) => `<label class="cat" title="${esc(g.name)}">
       <input type="checkbox" data-g="${esc(g.name)}" ${S.hidden.has(g.name) ? "" : "checked"}>
@@ -196,7 +311,7 @@ function buildCats(groups) {
   for (const cb of box.querySelectorAll("input")) {
     cb.onchange = () => {
       if (cb.checked) S.hidden.delete(cb.dataset.g); else S.hidden.add(cb.dataset.g);
-      updateRenderLink(); draw(); if (S.scene) build3DLines();
+      updateRenderLink(); draw(); if (S.scene) build3DLines(); refreshGrid();
     };
   }
 }
@@ -374,21 +489,28 @@ window.addEventListener("keydown", (e) => {
 });
 
 $("#btnUpload").onclick = upload;
+$("#btnAppend").onclick = appendFiles;
 $("#frame").onchange = (e) => selectFrame(+e.target.value);
 $("#prev").onclick = () => selectFrame(S.idx - 1);
 $("#next").onclick = () => selectFrame(S.idx + 1);
 $("#camera").onchange = (e) => { S.cam = e.target.value; loadView(true); };
-$("#colorBy").onchange = () => loadView(false);
-$("#sync").onchange = () => loadView(false);
-for (const id of ["#showPts", "#showAnn", "#show2d", "#show3d"]) $(id).onchange = () => { updateRenderLink(); draw(); if (S.scene) build3DLines(); };
-for (const id of ["#showLabel", "#ptSize", "#ptAlpha", "#ptDensity", "#ptTone"]) $(id).oninput = () => { updateRenderLink(); draw(); };
+$("#colorBy").onchange = () => { loadView(false); refreshGrid(); };
+$("#sync").onchange = () => { loadView(false); refreshGrid(); };
+for (const id of ["#showPts", "#showAnn", "#show2d", "#show3d"]) $(id).onchange = () => { updateRenderLink(); draw(); if (S.scene) build3DLines(); refreshGrid(); };
+for (const id of ["#showLabel", "#ptSize", "#ptAlpha", "#ptDensity", "#ptTone"]) {
+  $(id).oninput = () => { updateRenderLink(); draw(); };
+  $(id).addEventListener("change", refreshGrid);
+}
 $("#maxDepth").onchange = () => { if (S.ov) { buildBins(); draw(); } };
 
+function refreshGrid() { if (!$("#viewGrid").hidden) loadGrid(); }
 function showTab(name) {
   document.querySelectorAll("#tabs button").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
   $("#viewCam").hidden = name !== "cam";
   $("#viewBev").hidden = name !== "bev";
   $("#view3d").hidden = name !== "3d";
+  $("#viewGrid").hidden = name !== "grid";
+  if (name === "grid") loadGrid();
   if (name === "cam") { if (S.needsFit) { S.needsFit = false; fitView(); } else resizeCanvas(); draw(); if (S.ov) status(`${S.frames[S.idx].frame_id} / ${S.cam}`); }
   if (name === "3d") {
     if (!S.scene || S.scene.key !== sceneKey()) load3D();
@@ -397,6 +519,42 @@ function showTab(name) {
 }
 for (const b of document.querySelectorAll("#tabs button")) b.onclick = () => showTab(b.dataset.tab);
 
+// ---------------- 环视：当前帧所有相机 ----------------
+const CAM_ORDER = ["FRONT_LEFT", "FRONT", "FRONT_RIGHT", "LEFT", "RIGHT", "BACK_LEFT", "BACK", "BACK_RIGHT"];
+function camRank(c) {
+  const k = c.toUpperCase().replace(/^CAM(ERA)?[_-]?/, "").replace(/-/g, "_");
+  const i = CAM_ORDER.indexOf(k);
+  return i < 0 ? CAM_ORDER.length : i;
+}
+function loadGrid() {
+  if (!S.sid || !S.frames.length) return;
+  const f = S.frames[S.idx];
+  const cams = [...f.cameras].sort((a, b) => camRank(a) - camRank(b));
+  const cols = cams.length <= 1 ? 1 : cams.length <= 4 ? 2 : 3;
+  const box = $("#grid");
+  box.style.setProperty("--cols", cols);
+  const w = Math.min(1600, Math.ceil(($("#viewGrid").clientWidth || 1200) / cols * (window.devicePixelRatio || 1)));
+  const q = new URLSearchParams({ color_by: $("#colorBy").value, lidar: $("#showPts").checked, ann: $("#showAnn").checked,
+                                  sync: $("#sync").checked, point_size: $("#ptSize").value, alpha: +$("#ptAlpha").value / 100,
+                                  density: +$("#ptDensity").value / 100, tone: $("#ptTone").value, max_w: Math.max(64, w) });
+  const key = `${S.sid}|${S.idx}|${q}${groupsParam()}`;
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  box.innerHTML = cams.length ? "" : '<p class="muted">该帧没有相机</p>';
+  for (const c of cams) {
+    const fig = document.createElement("figure");
+    fig.title = `${c}：点击放大查看`;
+    const img = new Image();
+    img.alt = c;
+    img.onerror = () => { fig.innerHTML = `<figcaption>${esc(c)}</figcaption><div class="err">无法显示：图片缺失或标定有误</div>`; };
+    img.src = `/api/sessions/${S.sid}/frames/${S.idx}/render/${encodeURIComponent(c)}?${q}${groupsParam()}`;
+    fig.append(img);
+    fig.insertAdjacentHTML("beforeend", `<figcaption>${esc(c)}</figcaption>`);
+    fig.onclick = () => { S.cam = c; $("#camera").value = c; showTab("cam"); loadView(true); };
+    box.append(fig);
+  }
+  status(`${f.frame_id}：${cams.length} 个相机`);
+}
 // ---------------- 外参检查 ----------------
 const VERDICT = { ok: "正常", suspect: "疑似有误", uncertain: "无法确认", unknown: "无法检查", error: "出错" };
 const METHOD = { intensity_mi: "图像灰度与点云强度的互信息", depth_edges: "点云深度跳变与图像边缘的对齐度",
@@ -571,14 +729,25 @@ $("#btn3d").onclick = () => { showTab("3d"); load3D(); };
 $("#color3d").onchange = () => { if (S.v3d) S.v3d.setMode($("#color3d").value === "intensity" ? 1 : 0); };
 $("#size3d").oninput = () => { if (S.v3d) { S.v3d.opts.size = +$("#size3d").value; S.v3d.draw(); } };
 
-// ---------------- 上传区：拖放、文件计数 ----------------
-function updateDropText() {
-  const n = $("#files").files.length + $("#folder").files.length + S.dropped.length;
-  $("#drop").classList.toggle("has", n > 0);
-  $("#dropText").innerHTML = n ? `已选择 ${n} 个文件` : "选择文件，或拖到窗口任意位置";
+// ---------------- 上传区：选择、拖放（支持拖入文件夹） ----------------
+const fromInput = (inp) => [...inp.files].map((file) => ({ file, path: file.webkitRelativePath || file.name }));
+$("#files").onchange = () => { addFiles(fromInput($("#files"))); $("#files").value = ""; };
+$("#folder").onchange = () => { addFiles(fromInput($("#folder"))); $("#folder").value = ""; };
+$("#btnClear").onclick = (e) => { e.preventDefault(); clearPick(); };
+async function readEntry(entry, out) {
+  if (entry.isFile) {
+    await new Promise((res) => entry.file((file) => { out.push({ file, path: entry.fullPath.replace(/^\//, "") }); res(); }, res));
+  } else if (entry.isDirectory) {
+    if (JUNK_DIR.test(entry.fullPath.replace(/^\//, "") + "/")) return;
+    const reader = entry.createReader();
+    // readEntries 每次最多返回 100 个左右，要循环读到空
+    for (;;) {
+      const batch = await new Promise((res) => reader.readEntries(res, () => res([])));
+      if (!batch.length) break;
+      for (const e of batch) await readEntry(e, out);
+    }
+  }
 }
-$("#files").onchange = updateDropText;
-$("#folder").onchange = updateDropText;
 let dragDepth = 0;
 window.addEventListener("dragenter", (e) => {
   if (![...(e.dataTransfer?.types || [])].includes("Files")) return;
@@ -588,16 +757,31 @@ window.addEventListener("dragleave", () => {
   if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dragging"); $("#drop").classList.remove("over"); }
 });
 window.addEventListener("dragover", (e) => e.preventDefault());
-window.addEventListener("drop", (e) => {
+window.addEventListener("drop", async (e) => {
   e.preventDefault();
   dragDepth = 0; document.body.classList.remove("dragging"); $("#drop").classList.remove("over");
-  const files = [...(e.dataTransfer?.files || [])].filter((f) => f.size > 0 || f.type);
-  if (!files.length) { status("拖入的是文件夹时请用“选择整个文件夹”", "warn"); return; }
-  S.dropped.push(...files);
-  updateDropText();
-  status(`已添加 ${files.length} 个文件，点击“上传并解析”`);
+  const entries = [...(e.dataTransfer?.items || [])].map((it) => it.webkitGetAsEntry?.()).filter(Boolean);
+  let list = [];
+  if (entries.length) {
+    status("读取拖入的文件…");
+    for (const en of entries) await readEntry(en, list);
+  } else {
+    list = [...(e.dataTransfer?.files || [])].map((file) => ({ file, path: file.name }));
+  }
+  if (!list.length) { status("没有读到文件", "warn"); return; }
+  showSrc("upload");
+  const n = addFiles(list);
+  status(`添加了 ${n} 个文件，点击“上传并新建”或“追加到当前”`);
 });
-
+function showSrc(name) {
+  for (const b of document.querySelectorAll("#srcTabs button")) b.classList.toggle("active", b.dataset.src === name);
+  $("#srcUpload").hidden = name !== "upload"; $("#uploadBtns").hidden = name !== "upload";
+  $("#srcLocal").hidden = name !== "local"; $("#btnLocal").hidden = name !== "local";
+}
+for (const b of document.querySelectorAll("#srcTabs button")) b.onclick = () => showSrc(b.dataset.src);
+$("#localPath").value = localStorage.getItem("adviz.localPath") || "";
+$("#localPath").addEventListener("keydown", (e) => { if (e.key === "Enter") openLocal(); });
+$("#btnLocal").onclick = () => openLocal();
 // ---------------- 小组件 ----------------
 for (const o of document.querySelectorAll("output[for]")) {
   const inp = document.getElementById(o.htmlFor.value || o.getAttribute("for"));
@@ -659,6 +843,13 @@ async function initDesktop() {
     status("正在下载更新…");
     try { await tauri.invoke("install_update"); } catch (err) { status("更新失败: " + err, "err"); }
   };
+  $("#btnBrowse").hidden = false;
+  $("#btnBrowse").onclick = async () => {
+    try {
+      const p = await tauri.invoke("pick_folder");
+      if (p) openLocal(p);
+    } catch (err) { status("选择目录失败: " + err, "err"); }
+  };
   $("#btnDataDir").onclick = async (e) => {
     e.preventDefault();
     try {
@@ -698,4 +889,9 @@ loadAdapters();
 loadSamples();
 initDesktop();
 const sid = new URLSearchParams(location.search).get("s");
-if (sid) api(`/api/sessions/${sid}`).then((r) => r.json()).then(onSession).catch(() => history.replaceState(null, "", "/"));
+if (sid) {
+  status("恢复上次的会话…");
+  $("#progress").textContent = "恢复会话…";
+  api(`/api/sessions/${sid}`).then((r) => r.json()).then((s) => onSession(s))
+    .catch((e) => { $("#progress").textContent = ""; status("上次的会话无法恢复: " + e.message, "warn"); history.replaceState(null, "", "/"); });
+}

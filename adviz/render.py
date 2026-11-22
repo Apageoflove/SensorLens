@@ -370,8 +370,12 @@ def _paint_points(arr: np.ndarray, u, v, colors, size: int, alpha: float = 1.0) 
 
 
 def render_png(ds, frame, cam_name: str, point_size: int = 2, fmt: str = "JPEG", groups: set[str] | None = None,
-               alpha: float = 0.45, density: float = 0.5, tone: str = "soft", **kw) -> bytes:
+               alpha: float = 0.45, density: float = 0.5, tone: str = "soft", max_w: int | None = None,
+               **kw) -> bytes:
     img = Image.open(io.BytesIO(ds.read_image(frame, cam_name))).convert("RGB")
+    if max_w and img.width > max_w:
+        # 缩略图：按原图画的点缩小后会看不见，点按缩放比例的平方根放大
+        point_size = min(8, max(point_size, round(point_size * (img.width / max_w) ** 0.5)))
     ov = overlay(ds, frame, cam_name, **kw)
     ov["annotations"] = filter_groups(ov["annotations"], groups)
     sx, sy = img.width / ov["width"], img.height / ov["height"]
@@ -406,6 +410,8 @@ def render_png(ds, frame, cam_name: str, point_size: int = 2, fmt: str = "JPEG",
         if anchor is not None and a["label"]:
             u, v = px(*anchor)
             draw.text((u + 3, v - 12), a["label"], fill=a["color"])
+    if max_w and img.width > max_w:
+        img = img.resize((max_w, max(1, round(img.height * max_w / img.width))), Image.BILINEAR)
     buf = io.BytesIO()
     if fmt.upper() == "JPEG":
         img.save(buf, fmt, quality=90)

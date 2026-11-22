@@ -327,6 +327,46 @@
    }
   },
   {
+   "type": "box3d",
+   "id": "obj14",
+   "label": "car",
+   "center": [
+    -16.6485,
+    -3.4463,
+    0.8
+   ],
+   "size": [
+    4.5,
+    1.9,
+    1.6
+   ],
+   "yaw": -0.0081,
+   "attributes": {
+    "track_id": 14,
+    "occlusion": 0
+   }
+  },
+  {
+   "type": "box3d",
+   "id": "obj15",
+   "label": "car",
+   "center": [
+    -23.6191,
+    0.2103,
+    0.8
+   ],
+   "size": [
+    4.6,
+    1.9,
+    1.6
+   ],
+   "yaw": 0.0119,
+   "attributes": {
+    "track_id": 15,
+    "occlusion": 0
+   }
+  },
+  {
    "type": "polyline",
    "label": "lane_solid",
    "points": [

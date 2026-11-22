@@ -76,7 +76,25 @@ button.icon { width: 26px; padding: 0; flex: none; }
   text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 3px; }
 .link-file:hover { color: var(--text); }
 #progress { margin-top: 6px; font: 11.5px var(--mono); }
-#progress:empty { display: none; }
+#progress:empty, #pickInfo:empty, #dataInfo:empty { display: none; }
+.seg.mini { margin: 0 0 8px; border-bottom: 1px solid var(--line); }
+.seg.mini button { height: 24px; padding: 0 10px 0 0; margin-right: 12px; }
+.pick-row { display: flex; justify-content: space-between; align-items: baseline; }
+.pick-row a { color: var(--sub); font-size: 11.5px; }
+#pickInfo, #dataInfo { margin-top: 6px; font: 11.5px/1.6 var(--mono); }
+#dataInfo { padding-top: 6px; border-top: 1px dashed var(--line); color: var(--sub); }
+#dataInfo a { color: var(--sub); }
+.hint { margin: 4px 0 2px; color: var(--mute); font-size: 11.5px; line-height: 1.5; }
+.path-row input { flex: 1; }
+#side section.needs-data { transition: opacity .15s; }
+body:not(.has-data) #side section.needs-data { opacity: .4; pointer-events: none; }
+#viewGrid { overflow: auto; padding: 8px; }
+#grid { display: grid; gap: 6px; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr)); }
+#grid figure { margin: 0; position: relative; background: #111; border: 1px solid var(--line); cursor: pointer; min-height: 60px; }
+#grid figure:hover { border-color: var(--accent); }
+#grid img { display: block; width: 100%; height: auto; }
+#grid figcaption { position: absolute; left: 0; top: 0; padding: 1px 6px; background: rgba(14,14,14,.8); font: 11px var(--mono); color: var(--sub); }
+#grid .err { padding: 20px 8px; font-size: 11.5px; }
 
 /* 复选框 */
 .chk { display: flex; align-items: center; gap: 8px; margin: 3px 0; cursor: pointer; user-select: none; }

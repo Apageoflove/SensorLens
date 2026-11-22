@@ -41,7 +41,7 @@ def test_upload_zip_and_endpoints(client, demo_root):
     ply = client.get(f"/api/sessions/{sid}/stitch.ply?frames=0,2")
     assert ply.content.startswith(b"ply\n")
     batch = client.post(f"/api/sessions/{sid}/batch_check?max_frames=2").json()
-    assert batch["total"] == 4 and batch["counts"].get("ok") == 4
+    assert batch["total"] == 12 and batch["counts"].get("ok") == 12, batch["counts"]
     assert client.get(f"/api/sessions/{sid}").json()["session_id"] == sid
 
 
@@ -71,7 +71,7 @@ def test_scene_and_cloud(client, demo_root):
     with open(demo_root / "demo.zip", "rb") as fh:
         sid = client.post("/api/sessions", files=[("files", ("demo.zip", fh, "application/zip"))]).json()["session_id"]
     sc = client.get(f"/api/sessions/{sid}/scene?frames=0-2&target=world").json()
-    assert len(sc["origins"]) == 3 and sc["has_lidar"] and len(sc["cameras"]) == 2
+    assert len(sc["origins"]) == 3 and sc["has_lidar"] and len(sc["cameras"]) == 6
     assert {a["group"] for a in sc["annotations"]} >= {"vehicle_4w", "vehicle_2w", "pedestrian", "obstacle"}
     r = client.get(f"/api/sessions/{sid}/cloud.bin?frames=0&max_points=5000")
     n = int(r.headers["x-point-count"])
@@ -95,3 +95,37 @@ def test_image_only_upload(client, demo_root):
     sc = client.get(f"/api/sessions/{sid}/scene?frames=0").json()
     assert sc["annotations"] == [] and not sc["has_lidar"]
     assert client.get(f"/api/sessions/{sid}/cloud.bin?frames=0").headers["x-point-count"] == "0"
+
+
+def test_local_folder_session_and_append(client, demo_root, tmp_path):
+    r = client.post("/api/sessions/local", content=json.dumps({"path": str(demo_root / "demo")}),
+                    headers={"Content-Type": "text/plain"})
+    assert r.status_code == 415
+    assert client.post("/api/sessions/local", json={"path": "relative/dir"}).status_code == 400
+    assert client.post("/api/sessions/local", json={"path": str(tmp_path / "nope")}).status_code == 404
+    r = client.post("/api/sessions/local", json={"path": str(demo_root / "demo")})
+    assert r.status_code == 200, r.text
+    s = r.json()
+    assert s["source"] and len(s["frames"]) == 3 and len(s["frames"][0]["cameras"]) == 6
+    sid = s["session_id"]
+    img = client.get(f"/api/sessions/{sid}/frames/0/render/CAM_BACK?max_w=320")
+    assert img.status_code == 200
+    from PIL import Image
+    import io
+    assert Image.open(io.BytesIO(img.content)).width == 320
+    assert client.post(f"/api/sessions/{sid}/rescan").json()["index_info"]["cached"]
+    assert client.post(f"/api/sessions/{sid}/files", files=[("files", ("a.json", b"{}"))]).status_code == 400
+    assert client.delete(f"/api/sessions/{sid}").status_code == 200
+    assert (demo_root / "demo" / "calib.json").exists(), "删除本机目录会话不能删原始数据"
+
+    # 先传 JSON，后补图片
+    frame = (demo_root / "demo" / "frame_000000.json").read_bytes()
+    calib = (demo_root / "demo" / "calib.json").read_bytes()
+    r = client.post("/api/sessions", files=[("files", ("d/frame_000000.json", frame)), ("files", ("d/calib.json", calib))])
+    s = r.json()
+    sid = s["session_id"]
+    assert client.get(f"/api/sessions/{sid}/frames/0/image/CAM_FRONT").status_code == 404
+    jpg = (demo_root / "demo" / "images" / "CAM_FRONT" / "000000.jpg").read_bytes()
+    r = client.post(f"/api/sessions/{sid}/files", files=[("files", ("d/images/CAM_FRONT/000000.jpg", jpg))])
+    assert r.status_code == 200, r.text
+    assert client.get(f"/api/sessions/{sid}/frames/0/image/CAM_FRONT").status_code == 200

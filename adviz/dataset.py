@@ -23,22 +23,60 @@ from .motion import Trajectory
 from .pointcloud import load_points_ex
 from .schema import Frame, SchemaError, normalize_doc, parse_frame, sensor_names
 
-INDEX_VERSION = 3
+INDEX_VERSION = 4
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 POINTS_EXT = (".bin", ".pcd", ".ply", ".npy")
+DATA_EXT = IMAGE_EXT + POINTS_EXT + (".json",)
 PARALLEL_MIN_JSON = 400
+# 单帧 JSON 一般几 KB 到几 MB；再大的多半是整个数据集的元数据表（如 nuScenes 的 sample_data.json），
+# 整个读进内存会卡死甚至耗尽内存
+MAX_FRAME_JSON = 64 * 1024 * 1024
+JUNK_DIRS = {"__MACOSX", "__pycache__", "node_modules", "$RECYCLE.BIN", "System Volume Information", "venv"}
+JUNK_FILES = {"thumbs.db", "desktop.ini"}
+
+
+def _junk_dir(d: str) -> bool:
+    return d.startswith(".") or d in JUNK_DIRS
 
 
 def _ignored(name: str) -> bool:
-    base = posixpath.basename(name)
-    return name.startswith("__MACOSX/") or base.startswith("._") or base.startswith(".")
+    parts = name.split("/")
+    base = parts[-1]
+    return base.startswith(".") or base.lower() in JUNK_FILES or any(_junk_dir(p) for p in parts[:-1])
+
+
+class Noise:
+    """记录被忽略的无关文件（按扩展名计数），供界面提示“文件夹里有多少噪音”。"""
+
+    def __init__(self):
+        self.count = 0
+        self.bytes = 0
+        self.by_ext: dict[str, int] = {}
+
+    def add(self, name: str, size: int) -> None:
+        self.count += 1
+        self.bytes += size
+        ext = posixpath.splitext(name)[1].lower() or "(无扩展名)"
+        self.by_ext[ext] = self.by_ext.get(ext, 0) + 1
+
+    def merge(self, other: "Noise") -> None:
+        self.count += other.count
+        self.bytes += other.bytes
+        for k, v in other.by_ext.items():
+            self.by_ext[k] = self.by_ext.get(k, 0) + v
+
+    def describe(self) -> dict:
+        top = sorted(self.by_ext.items(), key=lambda kv: -kv[1])[:8]
+        return {"count": self.count, "bytes": self.bytes, "by_ext": dict(top)}
 
 
 class DirStore:
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
         self._stat: dict[str, tuple[int, int]] = {}
-        for dirpath, _, files in os.walk(self.root):
+        self.noise = Noise()
+        for dirpath, dirs, files in os.walk(self.root):
+            dirs[:] = [d for d in dirs if not _junk_dir(d)]
             for fn in files:
                 p = Path(dirpath) / fn
                 if p.suffix.lower() == ".zip":
@@ -46,7 +84,13 @@ class DirStore:
                 rel = p.relative_to(self.root).as_posix()
                 if _ignored(rel):
                     continue
-                st = p.stat()
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
+                if not rel.lower().endswith(DATA_EXT):
+                    self.noise.add(rel, st.st_size)
+                    continue
                 self._stat[rel] = (st.st_size, st.st_mtime_ns)
         self._names = sorted(self._stat)
 
@@ -58,6 +102,9 @@ class DirStore:
         if not p.is_relative_to(self.root):
             raise FileNotFoundError(name)
         return p.read_bytes()
+
+    def size(self, name: str) -> int:
+        return self._stat[name][0]
 
     def spec(self):
         return ["dir", str(self.root)]
@@ -74,7 +121,16 @@ class ZipStore:
         self.path = Path(path).resolve()
         self._zf = zipfile.ZipFile(self.path)
         self._lock = threading.Lock()
-        self._names = sorted(i.filename for i in self._zf.infolist() if not i.is_dir() and not _ignored(i.filename))
+        self.noise = Noise()
+        self._size: dict[str, int] = {}
+        for i in self._zf.infolist():
+            if i.is_dir() or _ignored(i.filename):
+                continue
+            if i.filename.lower().endswith(DATA_EXT):
+                self._size[i.filename] = i.file_size
+            else:
+                self.noise.add(i.filename, i.file_size)
+        self._names = sorted(self._size)
 
     def names(self) -> list[str]:
         return self._names
@@ -82,6 +138,9 @@ class ZipStore:
     def read(self, name: str) -> bytes:
         with self._lock:
             return self._zf.read(name)
+
+    def size(self, name: str) -> int:
+        return self._size[name]
 
     def close(self) -> None:
         self._zf.close()
@@ -129,6 +188,18 @@ class CompositeStore:
             raise FileNotFoundError(name)
         s, n = self._map[name]
         return s.read(n)
+
+    def size(self, name: str) -> int:
+        s, n = self._map[name]
+        return s.size(n)
+
+    @property
+    def noise(self) -> Noise:
+        out = Noise()
+        for s in self.stores:
+            if hasattr(s, "noise"):
+                out.merge(s.noise)
+        return out
 
     def close(self) -> None:
         for s in self.stores:
@@ -193,19 +264,27 @@ class FrameRef:
     sequence: str = ""
     timestamp: float | None = None
     poses: list = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
 
 
-def _frame_ref(name: str, sub: int, fid: str, d: dict, f: Frame) -> FrameRef:
+def _frame_ref(name: str, sub: int, fid: str, d: dict, f: Frame, missing: list[str]) -> FrameRef:
     seq = f.sequence or posixpath.dirname(name)
     poses = [[t, np.round(T, 9).tolist()] for t, T in f.pose_samples()]
-    return FrameRef(name, sub, fid, sensor_names(d, "cameras"), sensor_names(d, "lidars"), seq, f.timestamp, poses)
+    return FrameRef(name, sub, fid, sensor_names(d, "cameras"), sensor_names(d, "lidars"), seq, f.timestamp, poses,
+                    missing)
 
 
 def _scan(ds: "Dataset", names: list[str]) -> list[dict]:
     """读取一批 JSON，返回每个文件的 extends 目标和其中的帧（或错误）。"""
     out = []
     for n in names:
-        item: dict = {"name": n, "extends": None, "error": None, "frames": [], "skipped": []}
+        item: dict = {"name": n, "extends": None, "error": None, "frames": [], "skipped": [], "used": []}
+        size = ds.store.size(n) if hasattr(ds.store, "size") else 0
+        if size > MAX_FRAME_JSON:
+            item["error"] = (f"文件 {size / 1048576:.0f} MB，太大，不像单帧 JSON，已跳过（若是 nuScenes 元数据，"
+                             "请用“打开本地文件夹”指向数据根目录）")
+            out.append(item)
+            continue
         try:
             raw = json.loads(ds.store.read(n).decode("utf-8-sig"))
         except (ValueError, UnicodeDecodeError) as e:
@@ -233,7 +312,14 @@ def _scan(ds: "Dataset", names: list[str]) -> list[dict]:
                 item["skipped"].append([label, str(e)])
                 continue
             fid = str(d.get("frame_id") or (stem if len(docs) == 1 else f"{stem}#{i}"))
-            item["frames"].append(asdict(_frame_ref(n, i, fid, d, f)))
+            missing = []
+            for cam in f.cameras:
+                img = ds.find_image(f, cam)
+                if img is None:
+                    missing.append(cam)
+                else:
+                    item["used"].append(img)
+            item["frames"].append(asdict(_frame_ref(n, i, fid, d, f, missing)))
         out.append(item)
     return out
 
@@ -250,8 +336,10 @@ def _scan_worker(store_spec, adapter, adapters, names):
 class Dataset:
     def __init__(self, store, adapter: str = "auto", adapters: dict | None = None,
                  only: list[str] | None = None, index: list[FrameRef] | None = None,
-                 cache_path: str | Path | None = None, workers: int | None = None):
+                 cache_path: str | Path | None = None, workers: int | None = None, virtual=None):
         self.store = store
+        # virtual：不是逐帧 JSON 的数据源（如 nuScenes 元数据表），由它直接提供帧索引和每帧的标准格式文档
+        self.virtual = virtual
         self.adapter_name = adapter or "auto"
         self.adapters = adapters or {}
         if self.adapter_name != "auto" and self.adapter_name not in self.adapters:
@@ -272,8 +360,15 @@ class Dataset:
         self.index_info: dict = {}
         if index is not None:
             self.frames: list[FrameRef] = index
+        elif virtual is not None:
+            self.frames = virtual.refs()
+            self.skipped = list(virtual.skipped)
+            self.index_info = dict(virtual.info)
         else:
             self.frames = self._load_or_build_index(only, cache_path, workers)
+        noise = getattr(store, "noise", None)
+        if noise is not None and noise.count:
+            self.index_info["ignored_files"] = noise.describe()
 
     # ---------- 路径解析 ----------
     def resolve(self, path: str, base_dir: str = "") -> str | None:
@@ -315,6 +410,10 @@ class Dataset:
 
     def _canonical(self, name: str) -> list[dict]:
         def load():
+            if name.startswith(IMAGE_FRAME):
+                return [_image_frame_doc(name[len(IMAGE_FRAME):])]
+            if self.virtual is not None and name.startswith(self.virtual.prefix):
+                return [self.virtual.doc(int(name[len(self.virtual.prefix):]))]
             doc = self._raw_json(name)
             ad = self._pick_adapter(doc)
             return apply_adapter(doc, ad) if ad else [doc]
@@ -337,7 +436,7 @@ class Dataset:
                     data = json.loads(p.read_text(encoding="utf-8"))
                     if data.get("key") == key:
                         self.skipped = [tuple(x) for x in data["skipped"]]
-                        self.index_info = {"cached": True, "json_files": data.get("json_files", 0)}
+                        self.index_info = {**data.get("info", {}), "cached": True}
                         return [FrameRef(**r) for r in data["frames"]]
                 except (ValueError, KeyError, TypeError):
                     pass
@@ -347,7 +446,7 @@ class Dataset:
             p.parent.mkdir(parents=True, exist_ok=True)
             tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
             tmp.write_text(json.dumps({"key": key, "frames": [asdict(r) for r in refs], "skipped": self.skipped,
-                                       "json_files": self.index_info.get("json_files", 0)}, ensure_ascii=False),
+                                       "info": self.index_info}, ensure_ascii=False),
                            encoding="utf-8")
             os.replace(tmp, p)
         return refs
@@ -371,6 +470,7 @@ class Dataset:
         self.index_info = {"cached": False, "json_files": len(jsons), "parallel": parallel}
         referenced = {it["extends"] for it in items if it["extends"]}
         refs: list[FrameRef] = []
+        used: set[str] = set()
         for it in items:
             if it["error"]:
                 self.skipped.append((it["name"], it["error"]))
@@ -380,6 +480,18 @@ class Dataset:
                 continue
             self.skipped.extend(tuple(s) for s in it["skipped"])
             refs.extend(FrameRef(**r) for r in it["frames"])
+            used.update(it["used"])
+        if not refs and only is None and self.images:
+            refs = _image_frames(self.images)
+            self.index_info["image_only"] = True
+        else:
+            unused = [n for n in self.images if n not in used]
+            if unused:
+                self.index_info["unused_images"] = {"count": len(unused), "examples": unused[:5]}
+        missing = [r for r in refs if r.missing]
+        if missing:
+            self.index_info["missing_images"] = {"frames": len(missing),
+                                                 "examples": [[r.frame_id, r.missing] for r in missing[:5]]}
         return refs
 
     def get_frame(self, idx: int) -> Frame:
@@ -389,7 +501,8 @@ class Dataset:
 
         def load():
             d = self._canonical(ref.json_name)[ref.sub]
-            f = parse_frame(d, source=ref.json_name, base_dir=posixpath.dirname(ref.json_name))
+            base = "" if ref.json_name.startswith("@") else posixpath.dirname(ref.json_name)
+            f = parse_frame(d, source=ref.json_name, base_dir=base)
             f.frame_id = f.frame_id or ref.frame_id
             f.sequence = ref.sequence
             return f
@@ -404,19 +517,25 @@ class Dataset:
             return self._traj[sequence]
 
     # ---------- 传感器数据 ----------
-    def image_name(self, frame: Frame, cam: str) -> str:
-        s = frame.cameras.get(cam)
-        if s is None:
-            raise KeyError(f"相机 {cam!r} 不存在，可用: {list(frame.cameras)}")
+    def find_image(self, frame: Frame, cam: str) -> str | None:
+        s = frame.cameras[cam]
         r = self.resolve(s.path, frame.base_dir) if s.path else None
         if r:
             return r
         if len(self.images) == 1:
             return self.images[0]
         same = [n for n in self.images if cam.lower() in n.lower()]
-        if len(same) == 1:
-            return same[0]
-        raise FileNotFoundError(f"找不到相机 {cam} 的图片（JSON 中写的是 {s.path!r}）")
+        return same[0] if len(same) == 1 else None
+
+    def image_name(self, frame: Frame, cam: str) -> str:
+        s = frame.cameras.get(cam)
+        if s is None:
+            raise KeyError(f"相机 {cam!r} 不存在，可用: {list(frame.cameras)}")
+        r = self.find_image(frame, cam)
+        if r:
+            return r
+        raise FileNotFoundError(f"找不到相机 {cam} 的图片（JSON 中写的是 {s.path!r}）。"
+                                "图片和 JSON 可以分开上传：在当前会话里用“追加文件”补上图片即可")
 
     def read_image(self, frame: Frame, cam: str) -> bytes:
         return self.store.read(self.image_name(frame, cam))
@@ -445,6 +564,36 @@ class Dataset:
         return self.load_lidar_ex(frame, name)[0]
 
 
+IMAGE_FRAME = "@image:"
+
+
+def _image_frame_doc(key: str) -> dict:
+    cams = json.loads(key)
+    stem = posixpath.splitext(posixpath.basename(next(iter(cams.values()))))[0]
+    return {"frame_id": stem, "cameras": {c: {"image": p} for c, p in cams.items()}}
+
+
+def _image_frames(images: list[str]) -> list[FrameRef]:
+    """没有任何可用 JSON 时，把图片本身当作帧浏览。
+
+    <序列>/<相机>/<帧>.jpg 这样的目录里，同一序列下同名的图片归为同一帧的多个相机；其他情况一张图一帧。
+    """
+    groups: dict[tuple[str, str], dict[str, str]] = {}
+    for n in images:
+        d = posixpath.dirname(n)
+        cam = posixpath.basename(d) or "camera"
+        key = (posixpath.dirname(d), posixpath.splitext(posixpath.basename(n))[0])
+        g = groups.setdefault(key, {})
+        if cam in g:
+            g = groups.setdefault((d, n), {})
+        g[cam] = n
+    refs = []
+    for (seq, stem), cams in sorted(groups.items()):
+        key = json.dumps(dict(sorted(cams.items())), ensure_ascii=False)
+        refs.append(FrameRef(IMAGE_FRAME + key, 0, stem, sorted(cams), [], seq))
+    return refs
+
+
 def open_store(path: str | Path):
     p = Path(path)
     if p.is_dir():
@@ -458,10 +607,20 @@ def open_store(path: str | Path):
 
 
 def open_dataset(path: str | Path, adapter: str = "auto", adapters: dict | None = None,
-                 cache_path: str | Path | None = None, workers: int | None = None) -> Dataset:
+                 cache_path: str | Path | None = None, workers: int | None = None,
+                 nusc_cache: str | Path | None = None, index: list[FrameRef] | None = None) -> Dataset:
+    """打开目录、zip 或单个 json。目录若是 nuScenes 数据根目录（含 v1.0-*/ 元数据），直接按 nuScenes 读取。"""
+    from . import nuscenes
     p = Path(path)
+    found = nuscenes.find_meta(p)
+    if found is not None:
+        # 索引缓存不写进数据目录本身（可能是只读盘或别人的数据），默认放到 ad-viz 自己的数据/缓存目录
+        default = Path(os.environ.get("ADVIZ_DATA") or Path(__file__).resolve().parent.parent / "data")
+        cache = Path(nusc_cache) if nusc_cache else default / "cache" / "nuscenes"
+        src = nuscenes.NuScenes.open(found[0], found[1], cache)
+        return Dataset(src.store, "auto", adapters, index=index, virtual=src)
     only = [p.name] if p.suffix.lower() == ".json" else None
-    return Dataset(open_store(p), adapter, adapters, only=only, cache_path=cache_path, workers=workers)
+    return Dataset(open_store(p), adapter, adapters, only=only, index=index, cache_path=cache_path, workers=workers)
 
 
 def parse_frame_spec(spec: str, n: int, limit: int | None = None) -> list[int]:

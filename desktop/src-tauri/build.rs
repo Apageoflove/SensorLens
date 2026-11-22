@@ -7,6 +7,7 @@ fn main() {
             "change_data_dir",
             "check_update",
             "install_update",
+            "pick_folder",
             "pick_save_path",
             "save_file",
         ]),

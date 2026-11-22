@@ -298,6 +298,21 @@ async fn install_update(app: AppHandle) -> Result<(), String> {
     app.restart();
 }
 
+/// 选择要原地打开的数据目录（不复制，直接交给后端读取）。
+#[tauri::command]
+async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
+    let a = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        a.dialog().file().set_title("选择数据目录（原地读取，不复制）").blocking_pick_folder()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    match picked {
+        Some(p) => Ok(Some(p.into_path().map_err(|e| e.to_string())?.display().to_string())),
+        None => Ok(None),
+    }
+}
+
 #[tauri::command]
 async fn pick_save_path(app: AppHandle, name: String) -> Result<Option<String>, String> {
     let a = app.clone();
@@ -335,6 +350,7 @@ pub fn run() {
             change_data_dir,
             check_update,
             install_update,
+            pick_folder,
             pick_save_path,
             save_file
         ])

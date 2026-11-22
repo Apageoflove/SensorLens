@@ -4,7 +4,7 @@ python -m adviz.cli render <输入> --out <目录>      批量出投影图
 python -m adviz.cli check  <输入> --out report.csv  批量外参检查
 python -m adviz.cli stitch <输入> --frames 0-9 --out a.ply [--bev a.png]
 python -m adviz.cli demo   <目录>                    生成演示数据
-输入可以是目录、zip 或单个 json。
+输入可以是目录、zip、单个 json 或 nuScenes 数据根目录。
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from .adapter import load_adapters
-from .dataset import Dataset, open_store, parse_frame_spec
+from .dataset import Dataset, open_dataset, parse_frame_spec
 
 ROOT = Path(os.environ.get("ADVIZ_RES") or Path(__file__).resolve().parent.parent)
 _ds: Dataset | None = None
@@ -26,10 +26,7 @@ _sync = True
 
 
 def _open(path: str, adapter: str, index=None, cache: str = "") -> Dataset:
-    p = Path(path)
-    only = [p.name] if p.suffix.lower() == ".json" else None
-    return Dataset(open_store(p), adapter, load_adapters(ROOT / "adapters"), only=only, index=index,
-                   cache_path=cache or None)
+    return open_dataset(path, adapter, load_adapters(ROOT / "adapters"), cache_path=cache or None, index=index)
 
 
 def _init(path, adapter, index, sync=True):
