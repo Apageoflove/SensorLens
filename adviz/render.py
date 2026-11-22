@@ -225,8 +225,14 @@ def annotation_2d_items(frame, cam_name: str, warnings: list[str], cats: Categor
 
 def overlay(ds, frame, cam_name: str, *, lidars: bool = True, annotations: bool = True,
             max_points: int = 150_000, color_by: str = "depth", near: float = 0.1, sync: bool = True,
-            categories: Categories | None = None) -> dict:
-    """计算某个相机上的全部投影结果（numpy 数组形式）。"""
+            categories: Categories | None = None, auto_calib: bool = True) -> dict:
+    """计算某个相机上的全部投影结果（numpy 数组形式）。
+
+    图片损坏且没有完好副本时抛出 ImageCorrupt；auto_calib 时先按序列自动校验 / 修正外参，
+    校验结论为“不吻合且修不好”时只给 2D 标注，不给可能误导的 3D 投影。
+    """
+    from .autocalib import for_dataset, overrides_for, public
+    from .integrity import ImageCorrupt
     cats = categories or load_categories(None)
     if cam_name not in frame.cameras:
         raise KeyError(f"相机 {cam_name!r} 不存在，可用: {list(frame.cameras)}")
@@ -236,13 +242,29 @@ def overlay(ds, frame, cam_name: str, *, lidars: bool = True, annotations: bool 
     cam = cs.camera
     w, h = (cam.width, cam.height) if cam else image_size(ds, frame, cam_name)
     res = {"frame_id": frame.frame_id, "camera": cam_name, "width": w, "height": h, "points": None,
-           "annotations": [], "warnings": [], "notes": [], "stats": {}, "has_intrinsic": cam is not None}
+           "annotations": [], "warnings": [], "notes": [], "stats": {}, "has_intrinsic": cam is not None,
+           "image": None, "calib": None}
+    try:
+        st = ds.images_checked.status(ds.image_name(frame, cam_name))
+    except FileNotFoundError:
+        st = None
+    if st is not None:
+        if st["status"] == "corrupt":
+            raise ImageCorrupt(f"{cam_name}: {st['message']}（{st['file']}）")
+        res["image"] = st
+        if st["status"] == "repaired":
+            res["notes"].append(st["message"])
     has_3d = bool(frame.lidars) or any(a.kind not in KINDS_2D for a in frame.annotations)
     can_3d = cam is not None and cs.T_parent_sensor is not None
     if has_3d and not can_3d:
         res["warnings"].append(f"相机 {cam_name} 缺少{'内参' if cam is None else '外参'}，只能显示 2D 标注")
-    timing = Timing(ds, frame, enabled=sync)
-    if can_3d and lidars and frame.lidars:
+    calib = for_dataset(ds).get(frame.sequence, cam_name, sync) if (auto_calib and has_3d and can_3d) else None
+    res["calib"] = public(calib)
+    allow_3d = can_3d and not (calib and calib["status"] == "suspect")
+    if can_3d and not allow_3d:
+        res["warnings"].append(calib["message"])
+    timing = Timing(ds, frame, enabled=sync, overrides=overrides_for(frame, cam_name, calib and calib.get("fix")))
+    if allow_3d and lidars and frame.lidars:
         us, vs, zs, vals = [], [], [], []
         for lname in frame.lidars:
             try:
@@ -280,7 +302,7 @@ def overlay(ds, frame, cam_name: str, *, lidars: bool = True, annotations: bool 
             res["points"] = {"u": u, "v": v, "depth": z, "value": val, "vmin": vmin, "vmax": vmax,
                              "color_by": color_by}
     if annotations:
-        if can_3d:
+        if allow_3d:
             for i, a in enumerate(frame.annotations):
                 if a.kind in KINDS_2D:
                     continue
@@ -422,7 +444,7 @@ def render_png(ds, frame, cam_name: str, point_size: int = 2, fmt: str = "JPEG",
 
 # ---------------- BEV、拼接与 3D 视图 ----------------
 def stitch(ds, indices: list[int], target: str = "ego", lidar_names: list[str] | None = None,
-           voxel: float = 0.0, max_points: int = 3_000_000, sync: bool = True):
+           voxel: float = 0.0, max_points: int = 3_000_000, sync: bool = True, allow_empty: bool = False):
     """把多个雷达、多帧点云统一到目标坐标系。
 
     target=ego：以第一帧的自车系为参考（多帧时需要 ego_pose）；target=world：世界系。
@@ -450,6 +472,9 @@ def stitch(ds, indices: list[int], target: str = "ego", lidar_names: list[str] |
             chunks.append(np.concatenate([xyz, pts[:, 3:4]], axis=1).astype(np.float32))
         notes.extend(timing.notes)
     if not chunks:
+        if allow_empty:
+            # 没有点云时 BEV 只画 3D 标注和自车位置
+            return np.zeros((0, 4), np.float32), ref, T_target_refego, origins, list(dict.fromkeys(notes))
         raise ValueError("所选帧中没有点云")
     pts = np.concatenate(chunks)
     pts = voxel_downsample(pts, voxel)

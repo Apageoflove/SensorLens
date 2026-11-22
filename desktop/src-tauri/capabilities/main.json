@@ -16,6 +16,7 @@
     "allow-check-update",
     "allow-install-update",
     "allow-pick-folder",
+    "allow-open-folder",
     "allow-pick-save-path",
     "allow-save-file"
   ]

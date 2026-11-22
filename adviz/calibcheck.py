@@ -206,8 +206,75 @@ def _unknown(cam_name, msg, **kw) -> dict:
     return {"camera": cam_name, "verdict": "unknown", "message": msg, "method": None, "hypotheses": [], **kw}
 
 
-def check_camera(ds, frame, cam_name: str, lidar_name: str | None = None, max_points: int = 40_000,
-                 sync: bool = True) -> dict:
+class Evidence:
+    """一帧、一个相机上用于给外参打分的全部数据（图像、点云或标注），准备一次后可以对很多组外参反复打分。"""
+
+    def __init__(self, ds, frame, cam_name: str, lidar_name: str | None, method: str, max_points: int, sync: bool):
+        self.ds, self.frame, self.cam_name, self.sync, self.method = ds, frame, cam_name, sync, method
+        self.cam_s = frame.cameras[cam_name]
+        self.anns3d = [a for a in frame.annotations if a.kind not in KINDS_2D]
+        self.boxes3d = [a for a in self.anns3d if a.kind == "box3d"]
+        single = len(frame.cameras) == 1
+        self.boxes2d = [a for a in frame.annotations if a.kind == "box2d" and (a.camera == cam_name or
+                                                                               (a.camera is None and single))]
+        img = Image.open(io.BytesIO(ds.read_image(frame, cam_name))).convert("L")
+        cam0 = self.cam_s.camera
+        self.scale = min(1.0, WORK_WIDTH / cam0.width)
+        img = img.resize((max(1, round(cam0.width * self.scale)), max(1, round(cam0.height * self.scale))))
+        self.cam = cam0.scaled(img.width / cam0.width, img.height / cam0.height, img.width, img.height)
+        self.gray = np.asarray(img, dtype=np.float32) / 255.0
+        # 需要变化的外参：相机自身，加上点云 / 标注所在的雷达
+        self.lidar_name = lidar_name
+        if lidar_name:
+            self.other = frame.lidars[lidar_name]
+        else:
+            ref = {a.frame for a in self.anns3d} & set(frame.lidars)
+            self.other = frame.lidars[next(iter(ref))] if ref else None
+        self.pts = self.inten = self.E = None
+        if lidar_name:
+            raw = lidar_points(ds, frame, lidar_name, Timing(ds, frame, enabled=sync)).astype(np.float64)
+            if len(raw) > max_points:
+                raw = raw[np.random.default_rng(0).choice(len(raw), max_points, replace=False)]
+            self.pts, self.inten = raw[:, :3], raw[:, 3]
+            self.method = "intensity_mi" if float(np.std(self.inten)) > 1e-6 else "depth_edges"
+        if self.method in ("depth_edges", "annotation_edges"):
+            self.E = edge_map(self.gray)
+
+    def variants(self):
+        """(force, 相对当前约定的改动说明, 外参覆盖) 的全部组合。"""
+        for (cf, cc, Tc), (lf, lc, Tl) in product(_variants(self.cam_s, True), _variants(self.other, False)):
+            ov = {self.cam_s.name: Tc}
+            if self.other is not None and Tl is not None:
+                ov[self.other.name] = Tl
+            yield {"camera": cf, "lidar": lf}, cc + lc, ov
+
+    def score(self, ov: dict) -> tuple[float, int, float, str]:
+        """返回 (图像匹配分, 视野内数量, 物理先验系数, 备注)。ov 为传感器名到 T_parent_sensor 的覆盖。"""
+        timing = Timing(self.ds, self.frame, enabled=self.sync, overrides=ov)
+        T_of = lambda src: timing.T(self.cam_name, src)  # noqa: E731
+        notes, prior = [], 1.0
+        pc, nc = camera_prior(timing.g.get("ego", self.cam_name))
+        prior *= pc
+        notes.append(nc)
+        if self.method in ("intensity_mi", "depth_edges"):
+            pc_cam = transform_points(T_of(self.lidar_name), self.pts)
+            if self.method == "intensity_mi":
+                match, n = intensity_score(self.cam, pc_cam, self.inten, self.gray)
+            else:
+                match, n = image_score(self.cam, pc_cam, self.E)
+            pl, nl = lidar_prior(timing.g.get("ego", self.lidar_name), self.pts)
+            prior *= pl
+            notes.append(nl)
+        elif self.method == "box_iou":
+            match, n = _box_iou_score(self.cam, self.scale, self.boxes3d, self.boxes2d, T_of)
+        else:
+            match, n = _ann_edge_score(self.cam, self.anns3d, self.E, T_of)
+        return match, n, prior, "；".join(x for x in notes if x)
+
+
+def prepare(ds, frame, cam_name: str, lidar_name: str | None = None, max_points: int = 40_000,
+            sync: bool = True) -> Evidence | dict:
+    """准备打分数据；无法检查时返回 verdict=unknown 的结果字典。"""
     if cam_name not in frame.cameras:
         raise KeyError(f"相机 {cam_name!r} 不存在，可用: {list(frame.cameras)}")
     cam_s = frame.cameras[cam_name]
@@ -216,92 +283,58 @@ def check_camera(ds, frame, cam_name: str, lidar_name: str | None = None, max_po
     if cam_s.T_parent_sensor is None:
         return _unknown(cam_name, "相机没有外参，无法检查")
     anns3d = [a for a in frame.annotations if a.kind not in KINDS_2D]
-    boxes3d = [a for a in anns3d if a.kind == "box3d"]
     single = len(frame.cameras) == 1
-    boxes2d = [a for a in frame.annotations if a.kind == "box2d" and (a.camera == cam_name or
-                                                                      (a.camera is None and single))]
+    has2d = any(a.kind == "box2d" and (a.camera == cam_name or (a.camera is None and single))
+                for a in frame.annotations)
     if lidar_name is not None and lidar_name not in frame.lidars:
         raise KeyError(f"雷达 {lidar_name!r} 不存在，可用: {list(frame.lidars)}")
     if frame.lidars:
         lidar_name = lidar_name or next(iter(frame.lidars))
-        method = None
-    elif boxes3d and boxes2d:
+        method = "lidar"
+    elif any(a.kind == "box3d" for a in anns3d) and has2d:
         method = "box_iou"
     elif anns3d:
         method = "annotation_edges"
     else:
         return _unknown(cam_name, "该帧没有点云，也没有 3D 标注，无法检查外参（只能显示 2D 标注）")
+    return Evidence(ds, frame, cam_name, lidar_name, method, max_points, sync)
 
-    img = Image.open(io.BytesIO(ds.read_image(frame, cam_name))).convert("L")
-    cam0 = cam_s.camera
-    scale = min(1.0, WORK_WIDTH / cam0.width)
-    img = img.resize((max(1, round(cam0.width * scale)), max(1, round(cam0.height * scale))))
-    cam = cam0.scaled(img.width / cam0.width, img.height / cam0.height, img.width, img.height)
-    gray = np.asarray(img, dtype=np.float32) / 255.0
 
-    # 需要变化的外参：相机自身，加上点云 / 标注所在的雷达
-    other = None
-    if lidar_name:
-        other = frame.lidars[lidar_name]
-    else:
-        ref = {a.frame for a in anns3d} & set(frame.lidars)
-        other = frame.lidars[next(iter(ref))] if ref else None
+def verdict_of(method: str, current: float, best: float, best_is_current: bool) -> str:
+    min_ok, ratio, margin = THRESHOLDS[method]
+    if best_is_current or best < current * ratio + margin:
+        return "ok" if current >= min_ok else "uncertain"
+    return "suspect"
 
-    pts = inten = None
-    E = None
-    if lidar_name:
-        raw = lidar_points(ds, frame, lidar_name, Timing(ds, frame, enabled=sync)).astype(np.float64)
-        if len(raw) > max_points:
-            raw = raw[np.random.default_rng(0).choice(len(raw), max_points, replace=False)]
-        pts, inten = raw[:, :3], raw[:, 3]
-        method = "intensity_mi" if float(np.std(inten)) > 1e-6 else "depth_edges"
-    if method in ("depth_edges", "annotation_edges"):
-        E = edge_map(gray)
 
+def check_camera(ds, frame, cam_name: str, lidar_name: str | None = None, max_points: int = 40_000,
+                 sync: bool = True) -> dict:
+    ev = prepare(ds, frame, cam_name, lidar_name, max_points, sync)
+    if isinstance(ev, dict):
+        return ev
     rows = []
-    for (cf, cc, Tc), (lf, lc, Tl) in product(_variants(cam_s, True), _variants(other, False)):
-        ov = {cam_s.name: Tc}
-        if other is not None and Tl is not None:
-            ov[other.name] = Tl
-        timing = Timing(ds, frame, enabled=sync, overrides=ov)
-        T_of = lambda src, _t=timing: _t.T(cam_name, src)  # noqa: E731
-        notes, prior = [], 1.0
-        pc, nc = camera_prior(timing.g.get("ego", cam_name))
-        prior *= pc
-        notes.append(nc)
-        if method in ("intensity_mi", "depth_edges"):
-            pc_cam = transform_points(T_of(lidar_name), pts)
-            if method == "intensity_mi":
-                match, n = intensity_score(cam, pc_cam, inten, gray)
-            else:
-                match, n = image_score(cam, pc_cam, E)
-            pl, nl = lidar_prior(timing.g.get("ego", lidar_name), pts)
-            prior *= pl
-            notes.append(nl)
-        elif method == "box_iou":
-            match, n = _box_iou_score(cam, scale, boxes3d, boxes2d, T_of)
-        else:
-            match, n = _ann_edge_score(cam, anns3d, E, T_of)
-        rows.append({"changes": cc + lc, "force": {"camera": cf, "lidar": lf}, "match": round(match, 4),
-                     "in_view": n, "prior": round(prior, 3), "notes": "；".join(x for x in notes if x)})
+    for force, changes, ov in ev.variants():
+        match, n, prior, notes = ev.score(ov)
+        rows.append({"changes": changes, "force": force, "match": round(match, 4), "in_view": n,
+                     "prior": round(prior, 3), "notes": notes})
     for r in rows:
         r["score"] = round(r["match"] * r["prior"], 4)
     rows.sort(key=lambda r: (-r["score"], len(r["changes"])))
     current = next(r for r in rows if not r["changes"])
     best = rows[0]
-    min_ok, ratio, margin = THRESHOLDS[method]
-    if best is current or best["score"] < current["score"] * ratio + margin:
-        verdict = "ok" if current["score"] >= min_ok else "uncertain"
-        msg = ("当前外参约定与图像吻合" if verdict == "ok"
-               else "得分偏低，无法确认（图像纹理少、点云稀疏、标注少或标定本身有偏差都可能导致）")
+    method = ev.method
+    verdict = verdict_of(method, current["score"], best["score"], best is current)
+    if verdict == "ok":
+        msg = "当前外参约定与图像吻合"
+    elif verdict == "uncertain":
+        msg = "得分偏低，无法确认（图像纹理少、点云稀疏、标注少或标定本身有偏差都可能导致）"
     else:
-        verdict = "suspect"
         msg = "当前外参约定疑似有误，建议：" + "；".join(best["changes"])
         if current["notes"]:
             msg += f"（当前约定下：{current['notes']}）"
     if method == "box_iou":
-        msg += f"（依据：{len(boxes2d)} 个 2D 框与 3D 框投影的 IoU）"
+        msg += f"（依据：{len(ev.boxes2d)} 个 2D 框与 3D 框投影的 IoU）"
     elif method == "annotation_edges":
         msg += "（依据：3D 标注投影线与图像边缘的重合度，置信度较低）"
-    return {"camera": cam_name, "lidar": lidar_name, "verdict": verdict, "message": msg, "method": method,
+    return {"camera": cam_name, "lidar": ev.lidar_name, "verdict": verdict, "message": msg, "method": method,
             "current": current, "best": best, "hypotheses": rows}

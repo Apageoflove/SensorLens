@@ -298,19 +298,28 @@ async fn install_update(app: AppHandle) -> Result<(), String> {
     app.restart();
 }
 
-/// 选择要原地打开的数据目录（不复制，直接交给后端读取）。
+/// 选择文件夹：要原地打开的数据目录，或导出可视化产物的目标文件夹。
 #[tauri::command]
-async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
+async fn pick_folder(app: AppHandle, title: Option<String>) -> Result<Option<String>, String> {
     let a = app.clone();
-    let picked = tauri::async_runtime::spawn_blocking(move || {
-        a.dialog().file().set_title("选择数据目录（原地读取，不复制）").blocking_pick_folder()
-    })
+    let title = title.unwrap_or_else(|| "选择文件夹".into());
+    let picked = tauri::async_runtime::spawn_blocking(move || a.dialog().file().set_title(&title).blocking_pick_folder())
     .await
     .map_err(|e| e.to_string())?;
     match picked {
         Some(p) => Ok(Some(p.into_path().map_err(|e| e.to_string())?.display().to_string())),
         None => Ok(None),
     }
+}
+
+/// 在系统文件管理器里打开导出文件夹。只接受已存在的目录，不能借此运行程序。
+#[tauri::command]
+fn open_folder(app: AppHandle, path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if !p.is_dir() {
+        return Err(format!("文件夹不存在：{path}"));
+    }
+    app.opener().open_path(p.display().to_string(), None::<&str>).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -351,6 +360,7 @@ pub fn run() {
             check_update,
             install_update,
             pick_folder,
+            open_folder,
             pick_save_path,
             save_file
         ])

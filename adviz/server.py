@@ -24,6 +24,9 @@ from .adapter import load_adapters
 from .calibcheck import check_camera
 from .categories import load_categories
 from .dataset import Dataset, open_dataset, parse_frame_spec
+from .export import KINDS as EXPORT_KINDS, ExportJob
+from .integrity import ImageCorrupt
+from .plan import viz_plan
 from .pointcloud import write_ply
 from .render import (annotations_in, bev_png, filter_groups, overlay, overlay_to_json, render_png, scene_frames,
                      stitch)
@@ -49,7 +52,7 @@ for d in (SESSIONS, TMP):
 # 上传的大文件会先落到临时目录，这里固定到数据目录内，避免写到系统盘。
 tempfile.tempdir = str(TMP)
 
-app = FastAPI(title="ad-viz", version="0.4.0")
+app = FastAPI(title="ad-viz", version="0.5.0")
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
 
@@ -80,6 +83,11 @@ async def _no_stale_assets(request: Request, call_next):
 _sessions: dict[str, Dataset] = {}
 _lock = threading.Lock()
 _SID = re.compile(r"^[0-9a-f]{32}$")
+
+
+@app.exception_handler(ImageCorrupt)
+async def _corrupt(_: Request, exc: Exception):
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
 
 
 @app.exception_handler(SchemaError)
@@ -165,7 +173,7 @@ def _summary(sid: str, ds: Dataset) -> dict:
                         "lidars": r.lidars, "sequence": r.sequence, "timestamp": r.timestamp,
                         "has_pose": bool(r.poses)} for i, r in enumerate(ds.frames)],
             "skipped": [{"file": n, "reason": why} for n, why in ds.skipped],
-            "index_info": ds.index_info, "categories": _cats().describe()}
+            "index_info": ds.index_info, "categories": _cats().describe(), "plan": viz_plan(ds)}
 
 
 @app.get("/")
@@ -384,7 +392,8 @@ def frame_image(sid: str, idx: int, cam: str):
     ext = name.rsplit(".", 1)[-1].lower()
     media = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "bmp": "image/bmp",
              "webp": "image/webp"}.get(ext, "application/octet-stream")
-    return Response(ds.store.read(name), media_type=media, headers={"Cache-Control": "max-age=3600"})
+    # 读的是校验过的图片：磁盘文件损坏但有 zip 副本时返回副本，没有副本时返回 422 和原因
+    return Response(ds.read_image(f, cam), media_type=media, headers={"Cache-Control": "max-age=3600"})
 
 
 @app.get("/api/sessions/{sid}/frames/{idx}/overlay/{cam}")
@@ -452,7 +461,7 @@ def bev(sid: str, frames: str = "0", target: str = "ego", range_m: float = 60.0,
         groups: str | None = None):
     ds = _session(sid)
     idx = parse_frames(frames, len(ds.frames))
-    pts, ref, T_ref, origins, _ = stitch(ds, idx, target=target, voxel=voxel, sync=sync)
+    pts, ref, T_ref, origins, _ = stitch(ds, idx, target=target, voxel=voxel, sync=sync, allow_empty=True)
     center = origins[:, :2].mean(axis=0) if target == "world" or len(idx) > 1 else (0.0, 0.0)
     anns = filter_groups(annotations_in(ref, T_ref, _cats(), ds, sync), _groups(groups)) if ann else None
     png = bev_png(pts, center=tuple(center), range_m=range_m, res=res, color_by=color_by,
@@ -504,3 +513,64 @@ def cloud(sid: str, frames: str = "0", target: str = "ego", voxel: float = 0.0, 
     pts, *_rest, notes = stitch(ds, idx, target=target, voxel=voxel, sync=sync, max_points=max_points)
     return Response(np.ascontiguousarray(pts[:, :4], dtype="<f4").tobytes(), media_type="application/octet-stream",
                     headers={"X-Point-Count": str(len(pts)), "X-Notes": quote(json.dumps(notes, ensure_ascii=False))})
+
+
+# ---------------- 导出到用户指定的文件夹 ----------------
+_jobs: dict[str, ExportJob] = {}
+
+
+@app.post("/api/sessions/{sid}/export")
+async def start_export(sid: str, request: Request):
+    """把选定帧的投影图、环视拼图、BEV 和报告写到 out_dir。后台执行，用 GET /api/exports/{id} 查进度。"""
+    # 与打开本机目录相同：只接受 application/json，防止别的网页借浏览器往本机写文件
+    if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+        raise HTTPException(415, "需要 application/json")
+    body = await request.json()
+    ds = _session(sid)
+    out = str(body.get("out_dir") or "").strip().strip('"')
+    if not out:
+        raise HTTPException(400, "请选择导出文件夹")
+    p = Path(os.path.expandvars(os.path.expanduser(out)))
+    if not p.is_absolute():
+        raise HTTPException(400, "请填写完整路径，例如 E:\\out\\viz")
+    if p.exists() and not p.is_dir():
+        raise HTTPException(400, f"{p} 是文件，不是文件夹")
+    frames = parse_frame_spec(str(body.get("frames") or "0"), len(ds.frames), 100_000)
+    kinds = tuple(k for k in (body.get("kinds") or EXPORT_KINDS) if k in EXPORT_KINDS)
+    if not kinds:
+        raise HTTPException(400, "至少选择一种导出内容")
+    cams = [str(c) for c in body.get("cameras") or []] or None
+    st = body.get("style") or {}
+    style = {"point_size": int(np.clip(int(st.get("point_size", 2)), 1, 8)),
+             "alpha": float(np.clip(float(st.get("alpha", 0.45)), 0, 1)),
+             "density": float(np.clip(float(st.get("density", 0.5)), 0, 1)),
+             "tone": st.get("tone") if st.get("tone") in ("soft", "vivid", "mono") else "soft",
+             "color_by": st.get("color_by") if st.get("color_by") in ("depth", "intensity", "height") else "depth",
+             "lidars": bool(st.get("lidar", True)), "annotations": bool(st.get("ann", True))}
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise HTTPException(400, f"无法创建文件夹 {p}：{e}") from e
+    job = ExportJob(ds, p.resolve(), frames, cams, kinds, style, bool(body.get("sync", True)), _cats(),
+                    _groups(body.get("groups")))
+    with _lock:
+        _jobs[job.id] = job
+    threading.Thread(target=job.run, daemon=True, name=f"export-{job.id[:8]}").start()
+    return job.describe()
+
+
+@app.get("/api/exports/{jid}")
+def export_status(jid: str):
+    job = _jobs.get(jid)
+    if job is None:
+        raise HTTPException(404, "导出任务不存在")
+    return job.describe()
+
+
+@app.delete("/api/exports/{jid}")
+def export_cancel(jid: str):
+    job = _jobs.get(jid)
+    if job is None:
+        raise HTTPException(404, "导出任务不存在")
+    job.cancelled = True
+    return job.describe()

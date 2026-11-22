@@ -194,6 +194,12 @@ th, td { border-bottom: 1px solid var(--line); padding: 3px 8px; text-align: lef
 td { font-variant-numeric: tabular-nums; }
 th { color: var(--mute); position: sticky; top: 0; background: var(--panel); font-weight: 600; font-size: 11px; }
 tr:hover td { background: #222; }
+#panel .calib { padding: 2px 0 4px; }
+#dataInfo .plan b { color: var(--text); font-weight: 600; }
+#exportInfo { margin-top: 6px; font: 11.5px/1.6 var(--mono); word-break: break-all; }
+#exportInfo:empty { display: none; }
+#exportInfo a { color: var(--accent); }
+#side section.off { display: none; }
 .v-ok { color: var(--ok); } .v-suspect { color: var(--err); font-weight: 600; } .v-uncertain, .v-unknown { color: var(--warn); } .v-error { color: var(--err); }
 .warn { color: var(--warn); } .err { color: var(--err); }
 tr.clickable { cursor: pointer; } tr.clickable:hover td { background: #262626; }

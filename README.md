@@ -59,6 +59,13 @@ cd desktop\src-tauri; cargo tauri build --bundles nsis      # Linux: --bundles d
 
 ## 页面功能
 
+只需提供图片和配对的 JSON，其余自动完成：
+
+- 自动选择可视化：根据数据里实际有什么（相机数、内外参、点云、位姿、2D/3D 标注）决定显示哪些视图。多相机默认进入环视，有点云或 3D 标注时提供 BEV 和 3D 视图，有位姿的多帧点云可以拼接。侧栏会列出自动选择的视图。
+- 图片完整性：每张图片在叠加投影前都会检查。数据里有同名的 zip 副本时（如 nuScenes 目录里的 `samples.zip`）比对 CRC，磁盘文件损坏就自动改用副本；没有副本时检查 JPEG 结束标记并完整解码一次，损坏的图片不出图、不叠加投影，并说明原因。拷贝或解压中断造成的半张灰图不会再被当成正常图片。
+- 自动标定校验 / 修正：每个序列的每个相机在打开时取 4 帧，对外参方向、四元数顺序、相机轴约定的各种组合打分（方法见“外参检查原理”）。多数帧都认为另一种约定明显更好时自动改用；有点云或 2D 框可作依据时，再在 ±3° 内对相机姿态做小角度精调，只在多数帧都变好时采用。结论（已验证 / 无法自动验证 / 不吻合）显示在输出栏。不吻合又修不好的相机只显示 2D 标注，不画可能误导的 3D 投影。
+- 导出到文件夹：侧栏“导出可视化”选择目标文件夹（桌面版可点“浏览…”）和范围（当前帧、当前序列、全部帧或自定义帧），一次写出每个相机的投影图、环视拼图、BEV 俯视图，以及 `report.json` / `report.csv`（每个文件的状态、标定结论、跳过的损坏图片）。样式与当前显示设置一致。
+
 - 数据来源，两种方式：
   - 上传文件：图片、JSON、点云可以一起选，也可以分几次选（会累加，同路径的去重）；整个文件夹可以选择或直接拖进窗口。zip 不解压、按需读取；tar/tar.gz 上传后解压一次。漏传的文件可以“追加到当前”会话，例如先传 JSON 再补图片。
   - 打开本机目录：原地读取，不复制，适合几十 GB 的数据。支持目录、zip、单个 json。桌面版可以点“浏览…”选目录。
@@ -77,6 +84,7 @@ cd desktop\src-tauri; cargo tauri build --bundles nsis      # Linux: --bundles d
 
 ```powershell
 . .\env.ps1
+& $env:ADVIZ_PYTHON -m adviz.cli export D:\data\batch.zip --out out\viz              # 投影图 + 环视 + BEV + 报告
 & $env:ADVIZ_PYTHON -m adviz.cli render D:\data\batch.zip --out out\render --workers 8
 & $env:ADVIZ_PYTHON -m adviz.cli check  D:\data\batch.zip --out out\report.csv --workers 8
 & $env:ADVIZ_PYTHON -m adviz.cli stitch D:\data\batch.zip --frames 0-99 --target world --out out\map.ply --bev out\map.png

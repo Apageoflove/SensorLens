@@ -8,6 +8,7 @@ fn main() {
             "check_update",
             "install_update",
             "pick_folder",
+            "open_folder",
             "pick_save_path",
             "save_file",
         ]),

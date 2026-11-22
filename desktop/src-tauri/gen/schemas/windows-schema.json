@@ -375,6 +375,18 @@
           "markdownDescription": "Enables the install_update command without any pre-configured scope."
         },
         {
+          "description": "Enables the open_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-folder",
+          "markdownDescription": "Enables the open_folder command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pick_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pick-folder",
+          "markdownDescription": "Enables the pick_folder command without any pre-configured scope."
+        },
+        {
           "description": "Enables the pick_save_path command without any pre-configured scope.",
           "type": "string",
           "const": "allow-pick-save-path",
@@ -421,6 +433,18 @@
           "type": "string",
           "const": "deny-install-update",
           "markdownDescription": "Denies the install_update command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-folder",
+          "markdownDescription": "Denies the open_folder command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pick_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pick-folder",
+          "markdownDescription": "Denies the pick_folder command without any pre-configured scope."
         },
         {
           "description": "Denies the pick_save_path command without any pre-configured scope.",

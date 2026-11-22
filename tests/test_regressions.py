@@ -109,7 +109,7 @@ def test_zips_with_same_layout_both_kept(tmp_path):
     assert sorted(r.frame_id for r in ds.frames) == ["one", "two"]
     for i, r in enumerate(ds.frames):
         f = ds.get_frame(i)
-        assert ds.read_image(f, "C") == r.frame_id.encode()
+        assert ds.store.read(ds.image_name(f, "C")) == r.frame_id.encode()
     store.close()
 
 

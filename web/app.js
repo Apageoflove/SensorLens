@@ -176,6 +176,12 @@ function sessionInfo(s) {
       .map(([f, c]) => `${f}: ${c.join("/")}`).join("；"))}</span>`);
   }
   if (ii.unused_images) out.push(`${ii.unused_images.count} 张图片没有被任何 JSON 引用`);
+  if (ii.image_copies) out.push(`图片会与 ${esc(ii.image_copies.map((c) => c.zip).join("、"))} 中的副本比对，损坏的文件自动改用副本`);
+  const plan = s.plan || {};
+  if (plan.views?.length) {
+    out.push(`<span class="plan">自动可视化：${plan.views.map((v) => `<b>${esc(v.title)}</b>（${esc(v.detail)}）`).join("，")}</span>`);
+  }
+  for (const n of plan.notes || []) out.push(`<span class="muted">${esc(n)}</span>`);
   if (s.source) out.push(`<a href="#" id="lnkRescan">重新扫描</a>`);
   return out.join("<br>");
 }
@@ -201,8 +207,18 @@ function onSession(s, keepView = false) {
     $("#panel").innerHTML = `<table><tr><th>跳过的文件${s.skipped.length > rows.length ? `（只列前 ${rows.length} 个，共 ${s.skipped.length}）` : ""}</th><th>原因</th></tr>${rows.map((k) =>
       `<tr><td>${esc(k.file)}</td><td class="warn">${esc(k.reason)}</td></tr>`).join("")}</table>`;
   } else $("#panel").innerHTML = "";
+  S.plan = s.plan || { views: [], default: "cam" };
+  const tabs = new Set((S.plan.views || []).map((v) => v.tab));
+  for (const b of document.querySelectorAll("#tabs button[data-tab]")) b.hidden = b.dataset.tab !== "cam" && !tabs.has(b.dataset.tab);
+  $("#secBev").classList.toggle("off", !tabs.has("bev"));
+  $("#expGrid").closest("label").hidden = !tabs.has("grid");
+  $("#expBev").closest("label").hidden = !tabs.has("bev");
   if (s.frames.length) {
-    if (keepView && prevIdx < s.frames.length) { S.cam = prevCam; selectFrame(prevIdx); } else selectFrame(0, true);
+    if (keepView && prevIdx < s.frames.length) { S.cam = prevCam; selectFrame(prevIdx); } else {
+      S.bevEdited = false;
+      selectFrame(0, true);
+      showTab(S.plan.default && tabs.has(S.plan.default) ? S.plan.default : "cam");
+    }
   } else { clearView(); status("没有可用的帧，请查看下方原因", "warn"); }
 }
 // ---------------- 帧 / 相机 ----------------
@@ -215,8 +231,10 @@ function selectFrame(i, fit = false) {
   for (const c of f.cameras) { const o = document.createElement("option"); o.value = c; o.textContent = c; cs.appendChild(o); }
   S.cam = f.cameras.includes(prev) ? prev : f.cameras[0] || null;
   if (S.cam) cs.value = S.cam;
+  if (!S.bevEdited) $("#bevFrames").value = String(i);
   loadView(fit || S.cam !== prev);
-  if (!$("#view3d").hidden) load3D(String(i));
+  if (!$("#view3d").hidden) load3D(S.bevEdited ? undefined : String(i));
+  if (!$("#viewBev").hidden) loadBev();
   refreshGrid();
 }
 
@@ -272,16 +290,23 @@ async function loadView(fit) {
     const sizeWarn = (img.naturalWidth !== ov.width || img.naturalHeight !== ov.height)
       ? `；图片 ${img.naturalWidth}x${img.naturalHeight} 与内参 ${ov.width}x${ov.height} 不一致，已按比例缩放` : "";
     const n2 = ov.annotations.filter((a) => a.is2d).length;
-    status(`${S.frames[S.idx].frame_id} / ${S.cam}  ${st}  标注 ${ov.annotations.length} 个（2D ${n2}，3D ${ov.annotations.length - n2}）` +
+    status((ov.calib ? `[${ov.calib.title}] ` : "") + `${S.frames[S.idx].frame_id} / ${S.cam}  ${st}  标注 ${ov.annotations.length} 个（2D ${n2}，3D ${ov.annotations.length - n2}）` +
            (ov.has_intrinsic ? "" : "  [无内参，仅 2D]") + sizeWarn, sizeWarn ? "warn" : "muted");
-    const msgs = ov.warnings.map((w) => `<div class="warn">${esc(w)}</div>`)
-      .concat((ov.notes || []).map((n) => `<div class="muted">· ${esc(n)}</div>`));
+    const msgs = [];
+    const c = ov.calib;
+    if (c) msgs.push(`<div class="calib v-${CALIB_CLASS[c.status] || "unknown"}">【${esc(c.title)}】${esc(c.message)}</div>`);
+    msgs.push(...ov.warnings.filter((w) => !c || w !== c.message).map((w) => `<div class="warn">${esc(w)}</div>`));
+    msgs.push(...(ov.notes || []).map((n) => `<div class="muted">· ${esc(n)}</div>`));
     $("#panel").innerHTML = msgs.join("");
   } catch (e) {
-    if (id === S.reqId) { clearView(); status("加载失败: " + e.message, "err"); }
+    if (id === S.reqId) {
+      clearView(); status("加载失败: " + e.message, "err");
+      $("#panel").innerHTML = `<div class="err">${esc(e.message)}</div>`;
+    }
   }
 }
 
+const CALIB_CLASS = { verified: "ok", unverified: "uncertain", suspect: "suspect", unchecked: "unknown" };
 function buildBins() {
   const p = S.ov.points;
   S.bins = Array.from({ length: NBINS }, () => []);
@@ -511,6 +536,7 @@ function showTab(name) {
   $("#view3d").hidden = name !== "3d";
   $("#viewGrid").hidden = name !== "grid";
   if (name === "grid") loadGrid();
+  if (name === "bev") loadBev();
   if (name === "cam") { if (S.needsFit) { S.needsFit = false; fitView(); } else resizeCanvas(); draw(); if (S.ov) status(`${S.frames[S.idx].frame_id} / ${S.cam}`); }
   if (name === "3d") {
     if (!S.scene || S.scene.key !== sceneKey()) load3D();
@@ -546,8 +572,10 @@ function loadGrid() {
     fig.title = `${c}：点击放大查看`;
     const img = new Image();
     img.alt = c;
-    img.onerror = () => { fig.innerHTML = `<figcaption>${esc(c)}</figcaption><div class="err">无法显示：图片缺失或标定有误</div>`; };
-    img.src = `/api/sessions/${S.sid}/frames/${S.idx}/render/${encodeURIComponent(c)}?${q}${groupsParam()}`;
+    api(`/api/sessions/${S.sid}/frames/${S.idx}/render/${encodeURIComponent(c)}?${q}${groupsParam()}`)
+      .then((r) => r.blob()).then((b) => { if (box.dataset.key === key) img.src = URL.createObjectURL(b); })
+      .catch((e) => { if (box.dataset.key === key) fig.innerHTML = `<figcaption>${esc(c)}</figcaption><div class="err">无法显示：${esc(e.message)}</div>`; });
+    img.onload = () => URL.revokeObjectURL(img.src);
     fig.append(img);
     fig.insertAdjacentHTML("beforeend", `<figcaption>${esc(c)}</figcaption>`);
     fig.onclick = () => { S.cam = c; $("#camera").value = c; showTab("cam"); loadView(true); };
@@ -595,18 +623,27 @@ function bevQuery() {
     range_m: $("#bevRange").value, voxel: $("#bevVoxel").value, sync: $("#sync").checked });
   return q.toString() + groupsParam();
 }
-$("#btnBev").onclick = async () => {
-  showTab("bev");
+async function loadBev(force = false) {
+  if (!S.sid) return;
+  const q = bevQuery();
+  if (!force && S.bevKey === q) return;
+  S.bevKey = q;
+  const id = S.bevId = (S.bevId || 0) + 1;
   const btn = $("#btnBev"); btn.disabled = true; status("生成 BEV…");
   try {
-    const r = await api(`/api/sessions/${S.sid}/bev?${bevQuery()}`);
-    const url = URL.createObjectURL(await r.blob());
+    const r = await api(`/api/sessions/${S.sid}/bev?${q}`);
+    const blob = await r.blob();
+    if (id !== S.bevId) return;
+    const url = URL.createObjectURL(blob);
     const old = $("#bevImg").src; $("#bevImg").src = url; if (old.startsWith("blob:")) URL.revokeObjectURL(old);
-    $("#bevInfo").textContent = `${r.headers.get("X-Point-Count")} 个点。上方为车头方向（x+），左侧为 y+，圆圈间隔 10 m，白色方块为各帧自车位置。`;
+    const n = +r.headers.get("X-Point-Count");
+    $("#bevInfo").textContent = (n ? `${n} 个点。` : "没有点云，只画 3D 标注。") + "上方为车头方向（x+），左侧为 y+，圆圈间隔 10 m，白色方块为各帧自车位置。";
     status("BEV 完成");
-  } catch (e) { status("BEV 失败: " + e.message, "err"); }
-  btn.disabled = false;
-};
+  } catch (e) { if (id === S.bevId) { S.bevKey = null; status("BEV 失败: " + e.message, "err"); } }
+  if (id === S.bevId) btn.disabled = false;
+}
+$("#btnBev").onclick = () => { showTab("bev"); loadBev(true); };
+$("#bevFrames").addEventListener("input", () => { S.bevEdited = true; });
 $("#lnkPly").onclick = (e) => { e.preventDefault(); location.href = `/api/sessions/${S.sid}/stitch.ply?${bevQuery()}`; };
 
 // ---------------- 3D 视图 ----------------
@@ -815,6 +852,72 @@ async function loadSamples() {
   } catch (_) { /* 旧后端没有该接口 */ }
 }
 
+// ---------------- 导出到文件夹 ----------------
+function rangesOf(idx) {
+  const out = [];
+  for (let k = 0; k < idx.length;) {
+    let j = k;
+    while (j + 1 < idx.length && idx[j + 1] === idx[j] + 1) j++;
+    out.push(j > k ? `${idx[k]}-${idx[j]}` : String(idx[k]));
+    k = j + 1;
+  }
+  return out.join(",");
+}
+function exportFrames() {
+  const scope = $("#exportScope").value;
+  if (scope === "frame") return String(S.idx);
+  if (scope === "all") return `0-${S.frames.length - 1}`;
+  if (scope === "seq") {
+    const seq = S.frames[S.idx].sequence;
+    return rangesOf(S.frames.map((f, i) => (f.sequence === seq ? i : -1)).filter((i) => i >= 0));
+  }
+  return $("#exportFrames").value.trim() || String(S.idx);
+}
+$("#exportScope").onchange = () => { $("#exportCustomRow").hidden = $("#exportScope").value !== "custom"; };
+$("#exportDir").value = localStorage.getItem("adviz.exportDir") || "";
+const EXPORT_STATUS = { skipped: "跳过", failed: "失败", partial: "仅 2D" };
+function showExport(j) {
+  const c = j.counts;
+  const head = j.state === "running" ? `导出中 ${j.done}/${j.total} 帧…` :
+    j.state === "done" ? `导出完成：${j.total} 帧，写出 ${c.written} 个文件` :
+    j.state === "cancelled" ? `已取消：完成 ${j.done}/${j.total} 帧，写出 ${c.written} 个文件` : `导出失败：${esc(j.error)}`;
+  const extra = (c.skipped ? `，跳过 ${c.skipped}` : "") + (c.failed ? `，失败 ${c.failed}` : "");
+  $("#exportInfo").innerHTML = `${head}${extra}<br><span title="${esc(j.out_dir)}">${esc(j.out_dir)}</span>` +
+    (j.state !== "running" && tauri ? ` <a href="#" id="lnkOpenOut">打开文件夹</a>` : "");
+  $("#lnkOpenOut")?.addEventListener("click", (e) => { e.preventDefault(); tauri.invoke("open_folder", { path: j.out_dir }).catch((err) => status("打开失败: " + err, "err")); });
+  if (j.state !== "running" && j.problems.length) {
+    $("#panel").innerHTML = `<p>导出时有 ${j.problems.length} 项需要注意（完整列表见 report.csv）：</p><table><tr><th>帧</th><th>相机</th><th>处理</th><th>原因</th></tr>${j.problems.map((r) =>
+      `<tr><td>${esc(r.frame_id)}</td><td>${esc(r.camera)}</td><td class="warn">${EXPORT_STATUS[r.status] || r.status}</td><td>${esc(r.message)}</td></tr>`).join("")}</table>`;
+  }
+}
+$("#btnExport").onclick = async () => {
+  const dir = $("#exportDir").value.trim();
+  if (!dir) { status("请先填写或选择导出文件夹", "warn"); $("#exportDir").focus(); return; }
+  const kinds = [["#expCam", "camera"], ["#expGrid", "surround"], ["#expBev", "bev"]]
+    .filter(([id]) => $(id).checked && !$(id).closest("label").hidden).map(([, k]) => k);
+  if (!kinds.length) { status("至少选择一种导出内容", "warn"); return; }
+  localStorage.setItem("adviz.exportDir", dir);
+  const body = { out_dir: dir, frames: exportFrames(), kinds, sync: $("#sync").checked,
+    style: { color_by: $("#colorBy").value, point_size: +$("#ptSize").value, alpha: +$("#ptAlpha").value / 100,
+             density: +$("#ptDensity").value / 100, tone: $("#ptTone").value, lidar: $("#showPts").checked, ann: $("#showAnn").checked } };
+  if (S.hidden.size) body.groups = S.cats.map((c) => c.name).filter((n) => !S.hidden.has(n)).join(",");
+  $("#btnExport").disabled = true;
+  try {
+    let j = await (await api(`/api/sessions/${S.sid}/export`, { method: "POST", headers: { "Content-Type": "application/json" },
+                                                            body: JSON.stringify(body) })).json();
+    S.exportId = j.id; $("#btnExportCancel").disabled = false;
+    while (j.state === "running") {
+      showExport(j);
+      await new Promise((r) => setTimeout(r, 700));
+      j = await (await api(`/api/exports/${j.id}`)).json();
+    }
+    showExport(j);
+    status(j.state === "done" ? "导出完成：" + j.out_dir : "导出" + (j.state === "cancelled" ? "已取消" : "失败"), j.state === "done" ? "muted" : "warn");
+  } catch (e) { status("导出失败: " + e.message, "err"); $("#exportInfo").textContent = e.message; }
+  $("#btnExport").disabled = false; $("#btnExportCancel").disabled = true; S.exportId = null;
+};
+$("#btnExportCancel").onclick = () => { if (S.exportId) api(`/api/exports/${S.exportId}`, { method: "DELETE" }).catch(() => {}); };
+
 // ---------------- 桌面版：版本、更新、数据目录 ----------------
 const tauri = window.__TAURI__?.core;
 async function initDesktop() {
@@ -846,9 +949,16 @@ async function initDesktop() {
   $("#btnBrowse").hidden = false;
   $("#btnBrowse").onclick = async () => {
     try {
-      const p = await tauri.invoke("pick_folder");
+      const p = await tauri.invoke("pick_folder", { title: "选择数据目录（原地读取，不复制）" });
       if (p) openLocal(p);
     } catch (err) { status("选择目录失败: " + err, "err"); }
+  };
+  $("#btnExportBrowse").hidden = false;
+  $("#btnExportBrowse").onclick = async () => {
+    try {
+      const p = await tauri.invoke("pick_folder", { title: "选择导出文件夹" });
+      if (p) { $("#exportDir").value = p; localStorage.setItem("adviz.exportDir", p); }
+    } catch (err) { status("选择文件夹失败: " + err, "err"); }
   };
   $("#btnDataDir").onclick = async (e) => {
     e.preventDefault();

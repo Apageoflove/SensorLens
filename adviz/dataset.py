@@ -11,6 +11,7 @@ import os
 import posixpath
 import threading
 import zipfile
+import zlib
 from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -19,11 +20,12 @@ from pathlib import Path
 import numpy as np
 
 from .adapter import apply_adapter, detect, looks_canonical
+from .integrity import ImageChecker, ImageCorrupt, ZipCopies
 from .motion import Trajectory
 from .pointcloud import load_points_ex
 from .schema import Frame, SchemaError, normalize_doc, parse_frame, sensor_names
 
-INDEX_VERSION = 4
+INDEX_VERSION = 5
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 POINTS_EXT = (".bin", ".pcd", ".ply", ".npy")
 DATA_EXT = IMAGE_EXT + POINTS_EXT + (".json",)
@@ -117,8 +119,10 @@ class DirStore:
 
 
 class ZipStore:
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, base: str = ""):
         self.path = Path(path).resolve()
+        # zip 所在目录相对数据根目录的路径，用来判断它是不是目录里已有文件的备份
+        self.base = base
         self._zf = zipfile.ZipFile(self.path)
         self._lock = threading.Lock()
         self.noise = Noise()
@@ -142,11 +146,14 @@ class ZipStore:
     def size(self, name: str) -> int:
         return self._size[name]
 
+    def info(self, name: str) -> zipfile.ZipInfo:
+        return self._zf.getinfo(name)
+
     def close(self) -> None:
         self._zf.close()
 
     def spec(self):
-        return ["zip", str(self.path)]
+        return ["zip", str(self.path), self.base]
 
     def signature(self) -> str:
         st = self.path.stat()
@@ -156,18 +163,40 @@ class ZipStore:
 class CompositeStore:
     """把多个存储合成一个命名空间。
 
-    后加入的存储如果有任何文件名和已有的重复（例如两个目录结构相同的序列 zip），
-    就给它的全部文件名加上 "<zip 文件名>/" 前缀，避免后一个被静默覆盖。
+    后加入的 zip 和已有文件同名时分两种情况：
+    - 抽查的重名文件至少一半内容相同（CRC 一致）：这个 zip 是已有文件的备份（例如数据目录里同时有 samples/ 和 samples.zip），
+      重名条目登记为副本，读图时用来校验和替换损坏的文件；
+    - 否则（例如两个目录结构相同的序列 zip）：给它的全部文件名加上 "<zip 文件名>/" 前缀，避免后一个被静默覆盖。
     """
+
+    COPY_RATIO = 0.5
+    COPY_SAMPLE = 24
 
     def __init__(self, stores: list):
         self.stores = stores
         self._map: dict[str, tuple[object, str]] = {}
         self.prefixes: list[str] = []
+        self.copies = ZipCopies()
         for s in stores:
             names = s.names()
+            base = getattr(s, "base", "")
+            keyed = [(n, posixpath.join(base, n) if base and posixpath.join(base, n) in self._map else n)
+                     for n in names]
+            overlap = [(n, k) for n, k in keyed if k in self._map]
             prefix = ""
-            if any(n in self._map for n in names):
+            if overlap and isinstance(s, ZipStore):
+                step = max(1, len(overlap) // self.COPY_SAMPLE)
+                sample = overlap[::step][:self.COPY_SAMPLE]
+                same = sum(1 for n, k in sample if s.info(n).CRC == self._crc_of(k))
+                if same >= self.COPY_RATIO * len(sample):
+                    for n, k in overlap:
+                        self.copies.add(k, s.path.name, s.info(n).CRC, lambda _s=s, _n=n: _s.read(_n))
+                    taken = {n for n, _ in overlap}
+                    for n, k in keyed:
+                        if n not in taken:
+                            self._map.setdefault(n, (s, n))
+                    continue
+            if overlap:
                 label = getattr(s, "path", None)
                 prefix = (label.name if label is not None else f"store{len(self.prefixes)}") + "/"
                 while any(k.startswith(prefix) for k in self._map):
@@ -177,6 +206,12 @@ class CompositeStore:
                 self._map.setdefault(prefix + n, (s, n))
         self._names = sorted(self._map)
 
+    def _crc_of(self, name: str) -> int | None:
+        s, n = self._map[name]
+        try:
+            return s.info(n).CRC if isinstance(s, ZipStore) else zlib.crc32(s.read(n))
+        except (KeyError, OSError):
+            return None
     def names(self) -> list[str]:
         return self._names
 
@@ -218,7 +253,7 @@ def store_from_spec(spec):
     if kind == "dir":
         return DirStore(spec[1])
     if kind == "zip":
-        return ZipStore(spec[1])
+        return ZipStore(spec[1], spec[2] if len(spec) > 2 else "")
     if kind == "composite":
         return CompositeStore([store_from_spec(s) for s in spec[1]])
     raise ValueError(f"未知存储类型 {kind}")
@@ -356,6 +391,7 @@ class Dataset:
         self._points = LRU(6)
         self._traj: dict[str, Trajectory] = {}
         self._traj_lock = threading.Lock()
+        self.images_checked = ImageChecker(store)
         self.skipped: list[tuple[str, str]] = []
         self.index_info: dict = {}
         if index is not None:
@@ -369,6 +405,10 @@ class Dataset:
         noise = getattr(store, "noise", None)
         if noise is not None and noise.count:
             self.index_info["ignored_files"] = noise.describe()
+        copies = getattr(store, "copies", None)
+        copies = copies() if callable(copies) else copies
+        if copies is not None and len(copies):
+            self.index_info["image_copies"] = copies.describe()
 
     # ---------- 路径解析 ----------
     def resolve(self, path: str, base_dir: str = "") -> str | None:
@@ -537,8 +577,16 @@ class Dataset:
         raise FileNotFoundError(f"找不到相机 {cam} 的图片（JSON 中写的是 {s.path!r}）。"
                                 "图片和 JSON 可以分开上传：在当前会话里用“追加文件”补上图片即可")
 
+    def read_image_checked(self, frame: Frame, cam: str) -> tuple[bytes, dict]:
+        """返回 (图片字节, 完整性状态)。损坏但有 zip 副本时返回副本内容。"""
+        return self.images_checked.read(self.image_name(frame, cam))
+
     def read_image(self, frame: Frame, cam: str) -> bytes:
-        return self.store.read(self.image_name(frame, cam))
+        """只返回可用的图片；文件损坏且没有完好副本时抛出 ImageCorrupt，不能在坏图上叠加投影。"""
+        data, st = self.read_image_checked(frame, cam)
+        if st["status"] == "corrupt":
+            raise ImageCorrupt(f"{cam}: {st['message']}（{st['file']}）")
+        return data
 
     def lidar_name(self, frame: Frame, name: str) -> str:
         s = frame.lidars.get(name)
@@ -594,11 +642,17 @@ def _image_frames(images: list[str]) -> list[FrameRef]:
     return refs
 
 
+def rel_dir(f: Path, root: Path) -> str:
+    """f 所在目录相对 root 的 posix 路径，root 本身为空串。"""
+    rel = f.parent.relative_to(root).as_posix()
+    return "" if rel == "." else rel
+
+
 def open_store(path: str | Path):
     p = Path(path)
     if p.is_dir():
         zips = sorted(p.rglob("*.zip"))
-        return CompositeStore([DirStore(p)] + [ZipStore(z) for z in zips])
+        return CompositeStore([DirStore(p)] + [ZipStore(z, rel_dir(z, p)) for z in zips])
     if p.suffix.lower() == ".zip":
         return ZipStore(p)
     if p.suffix.lower() == ".json":

@@ -90,13 +90,35 @@
   </section>
 
   <section id="secTools" class="needs-data">
-    <h2>外参检查</h2>
+    <h2>标定校验</h2>
+    <p class="hint">打开每个序列的相机时会自动校验外参，结论显示在下方输出栏。这里可以查看详细打分。</p>
     <button id="btnCheck">检查当前相机</button>
     <div class="row">
       <button id="btnBatch">批量检查前</button>
       <input id="batchN" type="number" min="1" max="5000" value="50"><span class="unit">帧</span>
     </div>
     <a id="lnkRender" class="btn link" target="_blank">下载当前渲染图</a>
+  </section>
+
+  <section id="secExport" class="needs-data">
+    <h2>导出可视化</h2>
+    <div class="row path-row">
+      <input id="exportDir" placeholder="导出到，例如 E:\out\viz" spellcheck="false">
+      <button id="btnExportBrowse" hidden>浏览…</button>
+    </div>
+    <div class="row"><label>范围</label>
+      <select id="exportScope"><option value="frame">当前帧</option><option value="seq">当前序列</option><option value="all">全部帧</option><option value="custom">自定义帧</option></select>
+    </div>
+    <div class="row" id="exportCustomRow" hidden><label>帧</label><input id="exportFrames" placeholder="0-99,120"></div>
+    <label class="chk"><input id="expCam" type="checkbox" checked><span>每个相机的投影图</span></label>
+    <label class="chk"><input id="expGrid" type="checkbox" checked><span>环视拼图</span></label>
+    <label class="chk"><input id="expBev" type="checkbox" checked><span>BEV 俯视图</span></label>
+    <p class="hint">样式与当前显示设置一致。文件夹里还会写 report.json / report.csv，列出每张图的标定校验结论和跳过原因。</p>
+    <div class="btn-pair">
+      <button id="btnExport" class="primary">导出</button>
+      <button id="btnExportCancel" disabled>取消</button>
+    </div>
+    <div id="exportInfo" class="muted"></div>
   </section>
 
   <section id="secBev" class="needs-data">

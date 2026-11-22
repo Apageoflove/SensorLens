@@ -1,5 +1,6 @@
 """批量命令行。
 
+python -m adviz.cli export <输入> --out <目录>      导出全部可视化（投影图、环视拼图、BEV、报告）
 python -m adviz.cli render <输入> --out <目录>      批量出投影图
 python -m adviz.cli check  <输入> --out report.csv  批量外参检查
 python -m adviz.cli stitch <输入> --frames 0-9 --out a.ply [--bev a.png]
@@ -11,7 +12,6 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-import re
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -36,8 +36,8 @@ def _init(path, adapter, index, sync=True):
 
 
 def _safe_name(s: str) -> str:
-    # Windows 文件名：冒号会写进 NTFS 备用数据流，其他字符直接报错
-    return re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", s).rstrip(" .") or "_"
+    from .export import safe_name
+    return safe_name(s)
 
 
 def _render_job(args):
@@ -79,7 +79,7 @@ def _run_pool(ds: Dataset, args, fn, jobs, workers: int):
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="adviz")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("render", "check", "stitch"):
+    for name in ("export", "render", "check", "stitch"):
         p = sub.add_parser(name)
         p.add_argument("input")
         p.add_argument("--adapter", default="auto")
@@ -117,6 +117,16 @@ def main(argv=None) -> int:
         [0] if args.cmd == "stitch" else list(range(len(ds.frames))))
     cams = [c for c in args.cameras.split(",") if c]
     print(f"共 {len(ds.frames)} 帧，处理 {len(idx)} 帧，索引耗时 {time.time() - t0:.1f}s")
+
+    if args.cmd == "export":
+        from .export import KINDS, ExportJob
+        job = ExportJob(ds, Path(args.out), idx, cams or None, KINDS, {}, not args.no_sync, None)
+        job.run()
+        print(f"{job.state}：写出 {job.counts['written']} 个文件，跳过 {job.counts['skipped']}，"
+              f"失败 {job.counts['failed']}，报告 {Path(args.out) / 'report.csv'}")
+        if job.error:
+            print(job.error, file=sys.stderr)
+        return 0 if job.state == "done" and not job.counts["failed"] else 1
 
     if args.cmd == "stitch":
         from .pointcloud import write_ply

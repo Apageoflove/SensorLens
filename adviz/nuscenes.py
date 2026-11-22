@@ -10,11 +10,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 
 import numpy as np
 
-from .dataset import FrameRef
+from .dataset import FrameRef, rel_dir
+from .integrity import ZipCopies
 
 INDEX_VERSION = 1
 REQUIRED = ("sample.json", "sample_data.json", "calibrated_sensor.json", "ego_pose.json", "sensor.json")
@@ -89,6 +91,25 @@ class PathStore:
     def __init__(self, root: Path, names: list[str]):
         self.root = root.resolve()
         self._names = sorted(set(names))
+        self._copies: ZipCopies | None = None
+        self._copies_lock = threading.Lock()
+
+    def copies(self) -> ZipCopies:
+        """数据根目录及其一级子目录里的 zip（如 samples.zip）作为图片的备份副本，读图时用来校验和替换损坏的文件。"""
+        with self._copies_lock:
+            if self._copies is None:
+                c = ZipCopies()
+                want = set(self._names).__contains__
+                for z in sorted(self.root.glob("*.zip")) + sorted(self.root.glob("*/*.zip")):
+                    c.add_zip(z, rel_dir(z, self.root), want)
+                self._copies = c
+            return self._copies
+
+    def close(self) -> None:
+        with self._copies_lock:
+            if self._copies is not None:
+                self._copies.close()
+                self._copies = None
 
     def names(self) -> list[str]:
         return self._names
