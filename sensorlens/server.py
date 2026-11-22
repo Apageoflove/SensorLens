@@ -6,7 +6,6 @@ import os
 import re
 import secrets
 import shutil
-import tarfile
 import tempfile
 import threading
 import uuid
@@ -20,6 +19,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from . import archives
 from .adapter import load_adapters
 from .calibcheck import check_camera
 from .categories import load_categories
@@ -52,7 +52,7 @@ for d in (SESSIONS, TMP):
 # 上传的大文件会先落到临时目录，这里固定到数据目录内，避免写到系统盘。
 tempfile.tempdir = str(TMP)
 
-app = FastAPI(title="SensorLens", version="0.6.2")
+app = FastAPI(title="SensorLens", version="0.7.0")
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
 
@@ -215,19 +215,11 @@ def _save_uploads(fdir: Path, files: list) -> None:
         dst.parent.mkdir(parents=True, exist_ok=True)
         with dst.open("wb") as out:
             shutil.copyfileobj(f.file, out, 4 * 1024 * 1024)
-        low = rel.lower()
-        if low.endswith((".tar", ".tar.gz", ".tgz")):
-            target = dst.parent / (dst.name.split(".")[0] + "_extracted")
-            n = 1
-            while target.exists():
-                n += 1
-                target = dst.parent / (dst.name.split(".")[0] + f"_extracted{n}")
+        if archives.kind(rel) not in (None, "zip"):
             try:
-                with tarfile.open(dst) as tf:
-                    tf.extractall(target, filter="data")
-            except tarfile.TarError as e:
-                raise HTTPException(400, f"{rel}: tar 包损坏或格式不支持（{e}）") from e
-            dst.unlink()
+                archives.extract_tree(dst)
+            except archives.ArchiveError as e:
+                raise HTTPException(400, str(e)) from e
 
 
 def _create_session(files: list, adapter: str) -> dict:
@@ -262,8 +254,8 @@ async def open_local(request: Request):
         raise HTTPException(400, "请填写完整的绝对路径（从盘符或 / 开始）")
     if not p.exists():
         raise HTTPException(404, f"路径不存在：{p}")
-    if p.is_file() and p.suffix.lower() not in (".zip", ".json"):
-        raise HTTPException(400, "只能打开目录、.zip 或 .json")
+    if p.is_file() and p.suffix.lower() not in (".zip", ".json") and archives.kind(p.name) is None:
+        raise HTTPException(400, "只能打开目录、.json 或压缩包（zip、tar、tar.gz、7z、rar 等）")
     if adapter != "auto" and adapter not in _adapters():
         raise HTTPException(400, f"适配器 {adapter!r} 不存在")
     return await run_in_threadpool(_open_local, p.resolve(), adapter)
@@ -274,7 +266,15 @@ def _open_local(p: Path, adapter: str) -> dict:
     sdir = SESSIONS / sid
     sdir.mkdir(parents=True)
     try:
-        meta = {"adapter": adapter, "source": str(p)}
+        if p.is_file() and archives.kind(p.name) not in (None, "zip"):
+            # zip 以外的压缩包不能原地读取：解压到会话目录，原文件不动
+            try:
+                archives.extract_tree(archives.extract(p, into=sdir / "files"))
+            except archives.ArchiveError as e:
+                raise HTTPException(400, str(e)) from e
+            meta = {"adapter": adapter, "extracted_from": str(p)}
+        else:
+            meta = {"adapter": adapter, "source": str(p)}
         (sdir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
         ds = _build(sdir, meta)
     except Exception:

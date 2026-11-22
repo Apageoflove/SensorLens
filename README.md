@@ -79,8 +79,9 @@ cd desktop\src-tauri; cargo tauri build --bundles nsis      # Linux: --bundles d
 - 导出到文件夹：侧栏“导出可视化”选择目标文件夹（桌面版可点“浏览…”）和范围（当前帧、当前序列、全部帧或自定义帧），一次写出每个相机的投影图、环视拼图、BEV 俯视图，以及 `report.json` / `report.csv`（每个文件的状态、标定结论、跳过的损坏图片）。样式与当前显示设置一致。
 
 - 数据来源，两种方式：
-  - 上传文件：图片、JSON、点云可以一起选，也可以分几次选（会累加，同路径的去重）；整个文件夹可以选择或直接拖进窗口。zip 不解压、按需读取；tar/tar.gz 上传后解压一次。漏传的文件可以“追加到当前”会话，例如先传 JSON 再补图片。
-  - 打开本机目录：原地读取，不复制，适合几十 GB 的数据。支持目录、zip、单个 json。桌面版可以点“浏览…”选目录。
+  - 上传文件：图片、JSON、点云可以一起选，也可以分几次选（会累加，同路径的去重）；整个文件夹可以选择或直接拖进窗口。图片和 JSON 也可以分开传：先传一部分，再用“追加到当前”补上另一部分，JSON 里写的路径、文件名或相机名会自动对上。
+  - 压缩包：zip 不解压、按需读取；tar、tar.gz/tgz、tar.bz2、tar.xz 用内置库解压；7z、rar、tar.zst 调用系统自带的 bsdtar（Windows 10 1803 起自带 `tar.exe`，macOS 自带，Linux 装 `libarchive-tools`），没有时找 7-Zip。单个文件的 `.gz/.bz2/.xz`（如 `000.json.gz`）解压成原文件。压缩包里套压缩包会继续解开（最多 3 层）。加密或损坏的包会报出是哪个文件。
+  - 打开本机目录：原地读取，不复制，适合几十 GB 的数据。支持目录、单个 json 和压缩包：zip 原地读取；其他格式解压到会话目录，原文件不动。桌面版可以点“浏览”选目录。
 - 图片和 JSON 的对应：按 JSON 里写的图片路径找；找不到时退回按文件名、相机名匹配。找不到图片的帧、没被任何 JSON 引用的图片都会在侧栏提示。没有任何可用 JSON 时按图片浏览，`<序列>/<相机>/<帧>.jpg` 这样的目录会把同名图片归为同一帧的多个相机。
 - 噪音过滤：只读取图片、JSON、点云和压缩包，其余文件（文档、日志、模型等）、隐藏文件，以及 `.git`、`__MACOSX`、`__pycache__`、`node_modules` 等目录会被忽略，上传前就在浏览器里过滤掉，侧栏显示忽略了多少。超过 64 MB 的 JSON 不当作单帧（多半是整个数据集的元数据表），跳过并说明原因。
 - nuScenes：打开 nuScenes 数据根目录（含 `v1.0-*/` 和 `samples/`）即可，不需要转换。每个关键帧是一帧，所有相机、LIDAR_TOP 和 3D 框自动识别；每个传感器用自己的时间戳和位姿，投影与 nuscenes-devkit 的公式一致。元数据首次扫描一次（trainval 约 40 秒），索引缓存到数据目录，之后秒开。磁盘上缺文件的传感器不显示，并在侧栏列出。
@@ -218,7 +219,7 @@ python -m sensorlens.cli stitch data/batch.zip --frames 0-99 --target world --ou
 
 ```
 sensorlens/  geometry 变换与坐标系图 | camera 相机模型 | pointcloud 点云读写
-             schema 标准格式解析 | adapter 字段映射 | automap 未知格式自动识别 | dataset 目录/zip 索引
+             schema 标准格式解析 | adapter 字段映射 | automap 未知格式自动识别 | dataset 目录/zip 索引 | archives 压缩包解压
              render 投影/BEV/拼接/时间同步 | motion 位姿插值与去畸变 | categories 类别归组
              calibcheck 外参检查 | autocalib 自动标定校验 | integrity 图片完整性 | plan 视图选择
              export 导出 | server Web 服务 | cli 批量 | demo 演示数据

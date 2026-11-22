@@ -47,7 +47,8 @@ async function loadAdapters() {
 
 // 与后端 dataset.py 的过滤规则一致：只上传可能用得上的文件，文件夹里的文档、日志、缓存、隐藏文件都不上传
 const KIND = [[/\.(jpe?g|png|bmp|webp)$/i, "image"], [/\.json$/i, "json"], [/\.(bin|pcd|ply|npy)$/i, "points"],
-              [/\.(zip|tar|tgz|tar\.gz)$/i, "archive"]];
+              [/\.(zip|7z|rar|tar|tgz|tbz2?|txz|tzst|tar\.(gz|bz2|xz|zst))$/i, "archive"],
+              [/\.(json|pcd|bin|ply|npy)\.(gz|bz2|xz)$/i, "archive"]];
 const JUNK_DIR = /(^|\/)(\.[^/]*|__MACOSX|__pycache__|node_modules|venv|\$RECYCLE\.BIN|System Volume Information)\//i;
 const MAX_FRAME_JSON = 64 * 1048576;
 const BIG_UPLOAD = 2 * 1073741824;
@@ -202,6 +203,7 @@ function onSession(s, keepView = false) {
   $("#progress").textContent = `${s.frames.length} 帧` + (nSeq > 1 ? `，${nSeq} 个序列` : "") + (nCam ? `，${nCam} 个相机` : "") +
     (s.skipped.length ? `，跳过 ${s.skipped.length} 个 JSON` : "") + (s.index_info?.cached ? "（索引来自缓存）" : "");
   $("#dataInfo").innerHTML = sessionInfo(s);
+  $("#sumData").textContent = s.frames.length ? `${s.frames.length} 帧` : "";
   $("#lnkRescan")?.addEventListener("click", (e) => { e.preventDefault(); rescan(); });
   document.querySelectorAll(".lnkAdapter").forEach((el) => el.addEventListener("click", (e) => {
     e.preventDefault(); e.stopPropagation();
@@ -237,6 +239,7 @@ function onSession(s, keepView = false) {
 function selectFrame(i, fit = false) {
   if (i < 0 || i >= S.frames.length) return;
   S.idx = i; $("#frame").value = i;
+  $("#sumFrame").textContent = `${i + 1} / ${S.frames.length}`;
   const f = S.frames[i];
   const cs = $("#camera"), prev = S.cam;
   cs.innerHTML = "";
@@ -837,6 +840,39 @@ for (const o of document.querySelectorAll("output[for]")) {
   const sync = () => { o.textContent = inp.value; };
   inp.addEventListener("input", sync); sync();
 }
+// 侧栏分区可折叠，折叠状态记在本机
+{
+  const KEY = "sensorlens.collapsed";
+  let saved = [];
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "[]"); } catch (_) { /* 忽略损坏的设置 */ }
+  if (!localStorage.getItem(KEY)) saved = ["secTools", "secExport", "secBev"];
+  for (const sec of document.querySelectorAll("#side section")) {
+    const h = sec.querySelector(":scope > h2");
+    if (!h) continue;
+    if (!sec.id) sec.id = "secData";
+    sec.classList.toggle("collapsed", saved.includes(sec.id));
+    h.tabIndex = 0;
+    h.setAttribute("role", "button");
+    h.setAttribute("aria-expanded", String(!sec.classList.contains("collapsed")));
+    const flip = () => {
+      sec.classList.toggle("collapsed");
+      h.setAttribute("aria-expanded", String(!sec.classList.contains("collapsed")));
+      localStorage.setItem(KEY, JSON.stringify([...document.querySelectorAll("#side section.collapsed")].map((x) => x.id)));
+    };
+    h.addEventListener("click", flip);
+    h.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); flip(); } });
+  }
+}
+// 滑块左侧填充强调色
+function paintRange(el) {
+  const p = ((+el.value - +el.min) / ((+el.max - +el.min) || 1)) * 100;
+  el.style.setProperty("--fill", p + "%");
+}
+for (const r of document.querySelectorAll('input[type=range]')) {
+  paintRange(r);
+  r.addEventListener("input", () => paintRange(r));
+}
+
 $("#sideToggle").onclick = () => {
   document.body.classList.toggle("side-collapsed");
   localStorage.setItem("sensorlens.side", document.body.classList.contains("side-collapsed") ? "0" : "1");

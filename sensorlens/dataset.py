@@ -870,7 +870,7 @@ def open_store(path: str | Path):
         return ZipStore(p)
     if p.suffix.lower() == ".json":
         return DirStore(p.parent)
-    raise ValueError(f"不支持的输入: {path}（支持目录、.zip、.json；tar 包请先解压）")
+    raise ValueError(f"不支持的输入: {path}（支持目录、.zip、.json；其他压缩包请在界面里打开，或先解压）")
 
 
 def open_dataset(path: str | Path, adapter: str = "auto", adapters: dict | None = None,
