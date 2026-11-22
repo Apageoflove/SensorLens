@@ -232,7 +232,8 @@ function draw() {
   const sx = S.img.naturalWidth / S.ov.width, sy = S.img.naturalHeight / S.ov.height;
   const p = S.ov.points;
   if (p && $("#showPts").checked) {
-    const s = +$("#ptSize").value / S.zoom, h = s / 2, dens = +$("#ptDensity").value, pal = palette();
+    // 点大小按原图像素计，缩小查看时点和图像一起缩小，不会连成一片盖住图像；最小 1 个屏幕像素
+    const s = Math.max(+$("#ptSize").value, 1 / S.zoom), h = s / 2, dens = +$("#ptDensity").value, pal = palette();
     ctx.globalAlpha = +$("#ptAlpha").value / 100;
     for (let b = 0; b < NBINS; b++) {
       const g = S.bins[b];

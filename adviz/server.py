@@ -49,7 +49,7 @@ for d in (SESSIONS, TMP):
 # 上传的大文件会先落到临时目录，这里固定到数据目录内，避免写到系统盘。
 tempfile.tempdir = str(TMP)
 
-app = FastAPI(title="ad-viz", version="0.3.0")
+app = FastAPI(title="ad-viz", version="0.3.1")
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
 
@@ -66,6 +66,16 @@ async def _auth(request: Request, call_next):
     if q is not None:
         resp.set_cookie("adviz_token", TOKEN, httponly=True, samesite="strict")
     return resp
+
+@app.middleware("http")
+async def _no_stale_assets(request: Request, call_next):
+    # 页面和脚本每次都向后端确认是否有新版本，避免升级后浏览器 / WebView 继续用缓存里的旧 app.js
+    resp = await call_next(request)
+    p = request.url.path
+    if p == "/" or p.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
 
 _sessions: dict[str, Dataset] = {}
 _lock = threading.Lock()
