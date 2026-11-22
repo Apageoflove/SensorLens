@@ -352,6 +352,32 @@ fn save_file(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<(), Str
     fs::write(&path, data).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
 }
 
+/// Windows 默认用系统强调色画标题栏，和页面的深色顶栏对不上。改成与页面顶栏同色（--panel）。
+/// Windows 10 不支持自定义颜色，只会切到深色标题栏。
+#[cfg(windows)]
+fn match_web_header(win: &tauri::WebviewWindow) {
+    use std::ffi::c_void;
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmSetWindowAttribute(hwnd: isize, attr: u32, value: *const c_void, size: u32) -> i32;
+    }
+    const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+    const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWA_CAPTION_COLOR: u32 = 35;
+    const DWMWA_TEXT_COLOR: u32 = 36;
+    let Ok(h) = win.hwnd() else { return };
+    let hwnd = h.0 as isize;
+    // COLORREF 是 0x00BBGGRR
+    for (attr, v) in [
+        (DWMWA_USE_IMMERSIVE_DARK_MODE, 1u32),
+        (DWMWA_CAPTION_COLOR, 0x001c_1c1c),
+        (DWMWA_BORDER_COLOR, 0x0030_3030),
+        (DWMWA_TEXT_COLOR, 0x00e0_e0e0),
+    ] {
+        unsafe { DwmSetWindowAttribute(hwnd, attr, &v as *const u32 as *const c_void, 4) };
+    }
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -375,12 +401,15 @@ pub fn run() {
                 .title("SensorLens")
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(900.0, 600.0)
+                .theme(Some(tauri::Theme::Dark))
                 // 让网页自己处理拖入文件（上传区），而不是被外壳拦截
                 .disable_drag_drop_handler();
             if let Some(d) = portable_dir() {
                 b = b.data_directory(d.join("webview-data"));
             }
-            b.build()?;
+            let win = b.build()?;
+            #[cfg(windows)]
+            match_web_header(&win);
             Ok(())
         })
         .build(tauri::generate_context!())

@@ -8,7 +8,7 @@
   --text: #d8d8d8;
   --sub: #9a9a9a;
   --mute: #6e6e6e;
-  --accent: #d9a441;
+  --accent: #4b8bf5;
   --ok: #7fb36a; --warn: #d9a441; --err: #e0675c;
   --mono: "Cascadia Mono", "JetBrains Mono", Consolas, "Microsoft YaHei", monospace;
 }
@@ -55,7 +55,7 @@ button, .btn { cursor: pointer; display: flex; align-items: center; justify-cont
   text-decoration: none; }
 button:hover, .btn:hover { background: #2c2c2c; border-color: #4a4a4a; }
 button:active { background: #202020; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #1a1a1a; font-weight: 600; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 button.primary:hover { background: #e3b257; border-color: #e3b257; }
 button:disabled { opacity: .5; cursor: progress; }
 .btn.link { background: none; border: 0; height: auto; padding: 0; margin-top: 8px; justify-content: flex-start; color: var(--sub);
