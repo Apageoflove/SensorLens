@@ -14,6 +14,13 @@
     <span class="brand-name"><span class="wordmark">SensorLens</span><span class="brand-sub">感知透镜</span></span>
   </header>
 
+  <section id="secBatches">
+    <h2>批次目录<span class="sum" id="sumBatches"></span></h2>
+    <p class="hint">每次上传或打开的数据各是一个批次，按“日期_名称”分开保存。你对相机投影做的确认也按批次记录，同一套标定的新批次会自动沿用。</p>
+    <input id="batchFilter" placeholder="按名称筛选" spellcheck="false">
+    <div id="batchList" class="muted">加载中…</div>
+  </section>
+
   <section>
     <h2>数据<span class="sum" id="sumData"></span></h2>
     <div class="seg mini" id="srcTabs">
@@ -92,7 +99,8 @@
 
   <section id="secTools" class="needs-data">
     <h2>标定校验</h2>
-    <p class="hint">打开每个序列的相机时会自动校验外参，结论显示在下方输出栏。这里可以查看详细打分。</p>
+    <p class="hint">同一序列的相机一起判断外参约定：证据强的相机说了算，证据弱的服从。看过投影后可以点“确认正确”，没把握的结论不会自动改参数。</p>
+    <button id="btnCalibAll">整批相机结论与确认</button>
     <button id="btnCheck">检查当前相机</button>
     <div class="row">
       <button id="btnBatch">批量检查前</button>

@@ -262,7 +262,7 @@ def overlay(ds, frame, cam_name: str, *, lidars: bool = True, annotations: bool 
     res["calib"] = public(calib)
     if has_3d and ds.annotation_yaw():
         res["notes"].append(ds.index_info["annotation_yaw"]["message"])
-    allow_3d = can_3d and not (calib and calib["status"] == "suspect")
+    allow_3d = can_3d and not (calib and calib["status"] == "suspect" and not calib.get("show_anyway"))
     if can_3d and not allow_3d:
         res["warnings"].append(calib["message"])
     timing = Timing(ds, frame, enabled=sync, overrides=overrides_for(frame, cam_name, calib and calib.get("fix")))

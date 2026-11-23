@@ -7,7 +7,9 @@ import re
 import secrets
 import shutil
 import tempfile
+import sys
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -23,7 +25,9 @@ from . import archives
 from .adapter import load_adapters
 from .calibcheck import check_camera
 from .categories import load_categories
+from .autocalib import for_dataset, public
 from .dataset import Dataset, open_dataset, parse_frame_spec
+from .decisions import ACTIONS as DECISION_ACTIONS, Decisions
 from .export import KINDS as EXPORT_KINDS, ExportJob
 from .integrity import ImageCorrupt
 from .plan import viz_plan
@@ -37,6 +41,7 @@ ROOT = Path(__file__).resolve().parent.parent
 RES = Path(os.environ.get("SENSORLENS_RES", ROOT)).resolve()
 DATA = Path(os.environ.get("SENSORLENS_DATA", ROOT / "data")).resolve()
 SESSIONS = DATA / "sessions"
+CALIB_LIBRARY = DATA / "calib_library.json"
 TMP = DATA / "tmp"
 WEB = RES / "web"
 SAMPLES = RES / "samples"
@@ -52,7 +57,7 @@ for d in (SESSIONS, TMP):
 # 上传的大文件会先落到临时目录，这里固定到数据目录内，避免写到系统盘。
 tempfile.tempdir = str(TMP)
 
-app = FastAPI(title="SensorLens", version="0.8.0")
+app = FastAPI(title="SensorLens", version="0.9.0")
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
 
@@ -133,13 +138,70 @@ def _meta(sdir: Path) -> dict:
     return json.loads((sdir / "meta.json").read_text(encoding="utf-8"))
 
 
+def _write_meta(sdir: Path, meta: dict) -> None:
+    tmp = sdir / "meta.json.tmp"
+    tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(sdir / "meta.json")
+
+
+_NAME_BAD = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+
+
+def _clean_name(s: str) -> str:
+    s = _NAME_BAD.sub("_", str(s)).strip(" ._")
+    return s[:80] or "未命名"
+
+
+def _batch_name(label: str) -> str:
+    """批次名：上传日期 + 文件夹 / 压缩包名；同名时加序号。"""
+    base = f"{time.strftime('%Y-%m-%d')}_{_clean_name(label)}"
+    used = {m.get("name") for m in (_meta_or_none(d) for d in SESSIONS.iterdir() if d.is_dir()) if m}
+    name, k = base, 2
+    while name in used:
+        name, k = f"{base} ({k})", k + 1
+    return name
+
+
+def _meta_or_none(sdir: Path) -> dict | None:
+    try:
+        return _meta(sdir)
+    except (OSError, ValueError):
+        return None
+
+
+def _label_stem(name: str) -> str:
+    st = archives._stem(name)
+    return st if st != name else (Path(name).stem if Path(name).suffix.lower() in (".zip", ".json") else name)
+
+
+def _upload_label(files: list) -> str:
+    names = [(f.filename or "").replace("\\", "/").strip("/") for f in files]
+    tops = {n.split("/", 1)[0] for n in names if n}
+    if len(tops) == 1:
+        top = tops.pop()
+        return _label_stem(top) if "/" not in names[0] else top
+    return f"上传的 {len(files)} 个文件"
+
+
+def _new_meta(adapter: str, kind: str, label: str, **extra) -> dict:
+    return {"adapter": adapter, "kind": kind, "name": _batch_name(label),
+            "created": time.strftime("%Y-%m-%d %H:%M:%S"), **extra}
+
+
 def _build(sdir: Path, meta: dict) -> Dataset:
     # source：直接打开本机目录（不复制）；否则打开上传到会话目录里的文件
     src = Path(meta["source"]) if meta.get("source") else sdir / "files"
     if not src.exists():
-        raise FileNotFoundError(f"数据位置不存在或已被移走：{src}")
-    return open_dataset(src, meta.get("adapter", "auto"), _adapters(), cache_path=sdir / "index.json",
-                        nusc_cache=DATA / "cache" / "nuscenes")
+        raise FileNotFoundError(f"数据位置不存在或已被移走：{src}。可在批次目录里“重新指定位置”")
+    ds = open_dataset(src, meta.get("adapter", "auto"), _adapters(), cache_path=sdir / "index.json",
+                      nusc_cache=DATA / "cache" / "nuscenes")
+    ds.decisions = Decisions(sdir / "decisions.json", CALIB_LIBRARY, meta.get("name", ""), sdir.name)
+    stats = {"frames": len(ds.frames), "sequences": len({r.sequence for r in ds.frames}),
+             "cameras": sorted({c for r in ds.frames for c in r.cameras})[:50]}
+    if meta.get("stats") != stats:
+        meta["stats"] = stats
+        _write_meta(sdir, meta)
+    return ds
 
 
 _build_locks: dict[str, threading.Lock] = {}
@@ -168,7 +230,7 @@ def _session(sid: str) -> Dataset:
 
 def _summary(sid: str, ds: Dataset) -> dict:
     meta = _meta(SESSIONS / sid)
-    return {"session_id": sid, "source": meta.get("source"),
+    return {"session_id": sid, "source": meta.get("source"), "name": meta.get("name"),
             "frames": [{"index": i, "frame_id": r.frame_id, "source": r.json_name, "cameras": r.cameras,
                         "lidars": r.lidars, "sequence": r.sequence, "timestamp": r.timestamp,
                         "has_pose": bool(r.poses)} for i, r in enumerate(ds.frames)],
@@ -227,8 +289,8 @@ def _create_session(files: list, adapter: str) -> dict:
     sdir = SESSIONS / sid
     try:
         _save_uploads(sdir / "files", files)
-        meta = {"adapter": adapter}
-        (sdir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        meta = _new_meta(adapter, "upload", _upload_label(files))
+        _write_meta(sdir, meta)
         ds = _build(sdir, meta)
     except Exception:
         shutil.rmtree(sdir, ignore_errors=True)
@@ -272,10 +334,10 @@ def _open_local(p: Path, adapter: str) -> dict:
                 archives.extract_tree(archives.extract(p, into=sdir / "files"))
             except archives.ArchiveError as e:
                 raise HTTPException(400, str(e)) from e
-            meta = {"adapter": adapter, "extracted_from": str(p)}
+            meta = _new_meta(adapter, "archive", _label_stem(p.name), extracted_from=str(p))
         else:
-            meta = {"adapter": adapter, "source": str(p)}
-        (sdir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+            meta = _new_meta(adapter, "local", _label_stem(p.name) if p.is_file() else p.name, source=str(p))
+        _write_meta(sdir, meta)
         ds = _build(sdir, meta)
     except Exception:
         shutil.rmtree(sdir, ignore_errors=True)
@@ -343,8 +405,8 @@ def open_sample(name: str):
         else:
             fdir.mkdir(parents=True)
             shutil.copy2(src, fdir / src.name)
-        meta = {"adapter": "auto"}
-        (sdir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        meta = _new_meta("auto", "sample", f"示例-{name}")
+        _write_meta(sdir, meta)
         ds = _build(sdir, meta)
     except Exception:
         shutil.rmtree(sdir, ignore_errors=True)
@@ -382,6 +444,131 @@ def delete_session(sid: str):
     if errors:
         raise HTTPException(409, f"会话已关闭，但有 {len(errors)} 个文件暂时无法删除（可能仍被占用）")
     return {"deleted": sid}
+
+
+def _require_json(request: Request) -> None:
+    # 与 /api/sessions/local 相同：跨站网页的“简单请求”带不了 application/json
+    if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+        raise HTTPException(415, "需要 application/json")
+
+
+def _batch_row(sdir: Path) -> dict | None:
+    meta = _meta_or_none(sdir)
+    if meta is None:
+        return None
+    src = meta.get("source")
+    created = meta.get("created") or time.strftime("%Y-%m-%d %H:%M:%S",
+                                                   time.localtime((sdir / "meta.json").stat().st_mtime))
+    dec = _meta_or_none_file(sdir / "decisions.json")
+    return {"id": sdir.name, "name": meta.get("name") or f"{created[:10]}_未命名", "created": created,
+            "kind": meta.get("kind") or ("local" if src else "upload"),
+            "location": src or meta.get("extracted_from") or str(sdir / "files"),
+            "copied": not src, "available": Path(src).exists() if src else (sdir / "files").exists(),
+            "stats": meta.get("stats") or {}, "decisions": len(dec or {})}
+
+
+def _meta_or_none_file(p: Path) -> dict | None:
+    try:
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+    except (OSError, ValueError):
+        return None
+
+
+@app.get("/api/batches")
+def list_batches():
+    """批次目录：所有打开过的数据（上传的、本机目录、压缩包、示例），新的在前。"""
+    rows = [r for d in SESSIONS.iterdir() if d.is_dir() and _SID.match(d.name) and (r := _batch_row(d))]
+    rows.sort(key=lambda r: r["created"], reverse=True)
+    return {"batches": rows, "data_dir": str(SESSIONS), "library": len(_meta_or_none_file(CALIB_LIBRARY) or {})}
+
+
+@app.patch("/api/batches/{sid}")
+async def update_batch(sid: str, request: Request):
+    """改名，或为本机目录类批次重新指定数据位置（数据被移动、换了盘符时）。"""
+    _require_json(request)
+    if not _SID.match(sid) or not (SESSIONS / sid / "meta.json").exists():
+        raise HTTPException(404, "批次不存在")
+    body = await request.json()
+    sdir = SESSIONS / sid
+    meta = _meta(sdir)
+    if "name" in body:
+        name = _clean_name(body.get("name") or "")
+        others = {r.get("name") for d in SESSIONS.iterdir() if d.is_dir() and d.name != sid
+                  for r in [_meta_or_none(d)] if r}
+        if name in others:
+            raise HTTPException(409, f"已有同名批次：{name}")
+        meta["name"] = name
+    if "location" in body:
+        if not meta.get("source"):
+            raise HTTPException(400, "这个批次的数据已复制在软件的数据目录里，不需要重新指定位置")
+        p = Path(os.path.expandvars(os.path.expanduser(str(body.get("location") or "").strip().strip('"'))))
+        if not p.is_absolute() or not p.exists():
+            raise HTTPException(404, f"路径不存在：{p}")
+        meta["source"] = str(p.resolve())
+        _drop(sid)
+    _write_meta(sdir, meta)
+    if sid in _sessions:
+        _sessions[sid].decisions.batch_name = meta.get("name", "")
+    return _batch_row(sdir)
+
+
+@app.post("/api/batches/{sid}/reveal")
+def reveal_batch(sid: str, request: Request):
+    """在文件管理器里打开批次的数据位置（只在本机后端上有意义）。"""
+    _require_json(request)
+    row = _batch_row(SESSIONS / sid) if _SID.match(sid) else None
+    if row is None:
+        raise HTTPException(404, "批次不存在")
+    p = Path(row["location"])
+    if not p.exists():
+        raise HTTPException(404, f"数据位置不存在：{p}")
+    target = p if p.is_dir() else p.parent
+    if sys.platform == "win32":
+        os.startfile(str(target))  # noqa: S606
+    else:
+        raise HTTPException(501, f"当前系统不支持自动打开，请手动打开：{target}")
+    return {"opened": str(target)}
+
+
+def _calib_row(ac, seq: str, cam: str, sync: bool) -> dict:
+    return {"sequence": seq, "camera": cam, "fingerprint": ac.fingerprint(seq, cam),
+            **(public(ac.get(seq, cam, sync)) or {})}
+
+
+@app.get("/api/sessions/{sid}/calib")
+def calib_status(sid: str, sequence: str | None = None, sync: bool = True):
+    """一个序列里每台相机的校验结论（同一序列的相机一起判断）。"""
+    ds = _session(sid)
+    seqs = [sequence] if sequence is not None else list(dict.fromkeys(r.sequence for r in ds.frames))
+    ac = for_dataset(ds)
+    rows = [_calib_row(ac, seq, cam, sync) for seq in seqs[:20] for cam in ac._cams(seq)]
+    return {"cameras": rows}
+
+
+@app.post("/api/sessions/{sid}/calib/{cam}")
+async def calib_decide(sid: str, cam: str, request: Request):
+    """记录你对某台相机的决定：confirm（当前显示的投影是对的）、keep_original（不要自动修正，原外参才对）、
+    show_anyway（判断为不吻合时仍显示 3D）、clear（撤销）。confirm / keep_original 会进标定库，以后同一套标定自动沿用。"""
+    _require_json(request)
+    body = await request.json()
+    action = str(body.get("action") or "")
+    seq = str(body.get("sequence") or "")
+    sync = bool(body.get("sync", True))
+    ds = _session(sid)
+    ac = for_dataset(ds)
+    if cam not in ac._cams(seq):
+        raise HTTPException(404, f"序列 {seq!r} 里没有相机 {cam!r}")
+    fp = ac.fingerprint(seq, cam)
+    if not fp:
+        raise HTTPException(400, f"相机 {cam} 缺少内参或外参，没有可确认的投影")
+    if action == "clear":
+        ds.decisions.clear(fp)
+    elif action in DECISION_ACTIONS:
+        fix = ac.get(seq, cam, sync).get("fix") if action == "confirm" else None
+        ds.decisions.set(fp, cam, action, fix)
+    else:
+        raise HTTPException(400, f"未知操作 {action!r}")
+    return _calib_row(ac, seq, cam, sync)
 
 
 @app.get("/api/sessions/{sid}/frames/{idx}/image/{cam}")

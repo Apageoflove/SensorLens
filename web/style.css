@@ -248,3 +248,19 @@ body.side-resizing iframe, body.side-resizing canvas, body.side-resizing img { p
   .row > label { width: 52px; }
   .keys { display: none; }
 }
+
+/* 批次目录 */
+#batchFilter { width: 100%; margin: 6px 0; }
+#batchList { max-height: 260px; overflow-y: auto; }
+#batchList .batch { padding: 7px 8px; border-radius: 6px; border: 1px solid var(--line); margin-bottom: 6px; background: var(--raised); }
+#batchList .batch.cur { border-color: var(--accent); }
+#batchList .batch.gone .bname { color: var(--mute); }
+#batchList .bname { color: var(--text); font-weight: 600; word-break: break-all; }
+#batchList .bmeta { color: var(--mute); font-size: 12px; margin-top: 2px; }
+#batchList .bact { display: flex; gap: 10px; margin-top: 4px; font-size: 12px; }
+#batchList .bact a { color: var(--accent); text-decoration: none; }
+/* 人工确认按钮 */
+.decide { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 6px; }
+.decide button.mini { width: auto; margin: 0; padding: 3px 10px; font-size: 12px; }
+table.calibtbl td { vertical-align: top; }
+table.calibtbl a { color: var(--accent); text-decoration: none; }

@@ -5,7 +5,11 @@
 - 多数帧都认为另一种约定明显更好时，自动改用那种约定（corrected）；
 - 有点云或 2D 框可以作为依据时，再在 ±3° 内对相机姿态做小角度精调（refined），只在多数帧都变好时才采用；
 - 证据表明投影是错的、又修不好时（suspect），不显示 3D 投影，避免给出误导的可视化。
-同一序列的同一相机只计算一次，结果缓存在数据集对象上。
+- 精调只在调完后能通过验证时才采用：没把握的时候不改参数。
+- 同一序列的相机一起判断（harmonize）：外参约定通常由同一个程序写出，各相机应当一致。
+  证据强的相机（点云 / 2D 框验证通过）说了算，证据弱的相机服从；强证据之间有分歧时标出来请人确认。
+- 用户确认过的结论（decisions 模块）优先，并按标定指纹沿用到以后的批次。
+同一序列只计算一次，结果缓存在数据集对象上。
 """
 from __future__ import annotations
 
@@ -15,7 +19,11 @@ import threading
 
 import numpy as np
 
-from .calibcheck import THRESHOLDS, Evidence, prepare, verdict_of
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+
+from .calibcheck import _LABELS, THRESHOLDS, Evidence, prepare, verdict_of
+from .decisions import fingerprint
 from .geometry import make_T
 from .integrity import ImageCorrupt
 from .schema import parse_extrinsic
@@ -28,7 +36,8 @@ REFINE_MIN_GAIN = 0.05
 # 只有 3D 标注可作依据时置信度低：另一种约定至少要好这么多倍才自动采用
 WEAK_RATIO = 1.5
 STATUS_TEXT = {"verified": "标定已验证", "unverified": "无法自动验证", "suspect": "标定与图像不吻合",
-               "unchecked": "未校验"}
+               "unchecked": "未校验", "confirmed": "已人工确认"}
+GROUP_WORKERS = 4
 
 
 def rot_deg(d) -> np.ndarray:
@@ -148,6 +157,9 @@ def solve(ds, sequence: str, cam: str, sync: bool = True, frames: list[int] | No
     min_ok = THRESHOLDS[method][0]
     score = chosen["mean"]
     out["score"] = {"before": round(cur["mean"], 4), "after": round(score, 4), "min_ok": min_ok}
+    out["_cur"] = {"camera": cur["force"].get("camera") or {}, "lidar": cur["force"].get("lidar") or {}}
+    out["_chosen"] = {"camera": chosen["force"].get("camera") or {}, "lidar": chosen["force"].get("lidar") or {}}
+    out["_lidar_name"] = evs[0].other.name if evs[0].other is not None else None
 
     fix = None
     if out["corrected"]:
@@ -156,7 +168,8 @@ def solve(ds, sequence: str, cam: str, sync: bool = True, frames: list[int] | No
     if verdict != "suspect" or out["corrected"]:
         if method in REFINE_METHODS:
             delta, refined_score, gain_ok = _refine(evs, [o[chosen["key"]] for o in base_ov], cam)
-            if gain_ok:
+            # 调完仍达不到验证线就不采用：分数低说明证据弱，此时“调好”的角度并不可信
+            if gain_ok and refined_score >= min_ok:
                 fix = dict(fix or {"camera": None, "lidar": None, "lidar_name": None}, delta_deg=delta)
                 out["refined"] = True
                 out["delta_deg"] = delta
@@ -238,33 +251,146 @@ def _message(out: dict, method: str, best: dict, cur: dict) -> str:
     return "；".join(parts)
 
 
+def _diff(r: dict) -> dict:
+    return {part: {k: v for k, v in r["_chosen"][part].items() if r["_cur"][part].get(k) != v}
+            for part in ("camera", "lidar")}
+
+
+def _change(r: dict) -> str | None:
+    """相对原始约定的改动（相机、雷达两部分）；雷达外参所有相机共用，一台相机单独要翻转也不采用。"""
+    if "_cur" not in r:
+        return None
+    return json.dumps(_diff(r), sort_keys=True)
+
+
+_NO_CHANGE = json.dumps({"camera": {}, "lidar": {}}, sort_keys=True)
+
+
+def _strong(r: dict) -> bool:
+    return r.get("method") in REFINE_METHODS and r.get("status") == "verified"
+
+
+def harmonize(results: dict[str, dict]) -> None:
+    """同一序列各相机的外参约定取得一致（就地修改 results）。"""
+    voters = {c: r for c, r in results.items() if _change(r) is not None}
+    strong = {c: r for c, r in voters.items() if _strong(r)}
+    pool = strong or voters
+    if len(pool) < 2 and not strong:
+        return
+    top, n = Counter(_change(r) for r in pool.values()).most_common(1)[0]
+    consensus = top if n * 2 > len(pool) else None
+    agree = sorted(c for c, r in pool.items() if _change(r) == consensus) if consensus else []
+    for cam, r in voters.items():
+        c = _change(r)
+        others = [x for x in agree if x != cam]
+        basis = "、".join(others[:4]) + (f" 等 {len(others)} 台" if len(others) > 4 else "")
+        if c == consensus:
+            if r.get("status") == "suspect" and consensus == _NO_CHANGE and cam not in strong:
+                # 只有本相机觉得要换外参约定（又不够把握去换），同一批的其他相机都认为原约定正确：
+                # 约定是整批共用的，按整批结论显示，但标红提醒
+                r.update(status="unverified", overruled=True)
+                r["message"] = (f"本相机的图像证据倾向另一种外参约定，但同一批相机（{basis}）都认为原约定正确，"
+                                "按原约定显示 3D 投影；本相机可能不准，请核对后确认")
+            continue
+        if cam in strong:
+            r["conflict"] = True
+            r["message"] += "；注意：同一批的其他相机得出的外参约定与本相机不同，请人工确认"
+            continue
+        if consensus is None:
+            if c != _NO_CHANGE:
+                _revert(r, "同一批相机的结论不一致，本相机证据较弱，未采用自动修正，请人工确认")
+            continue
+        want = json.loads(consensus)
+        if consensus == _NO_CHANGE:
+            _revert(r, f"同一批相机（{basis}）的结论是原外参约定正确，本相机证据较弱，按原约定显示")
+        else:
+            force = {p: dict(r["_cur"][p], **want[p]) for p in ("camera", "lidar")}
+            ln = r.get("_lidar_name")
+            r.update(corrected=True, status="unverified", delta_deg=None, refined=False, _chosen=force,
+                     changes=[f"{cam if p == 'camera' else ln} {_LABELS.get(k, k)}改为 {v}"
+                              for p in ("camera", "lidar") for k, v in want[p].items()],
+                     fix={"camera": force["camera"] or None, "lidar": force["lidar"] or None, "lidar_name": ln})
+            r["message"] = (f"按同一批相机（{basis}）的结论统一修正外参约定：" + "；".join(r["changes"]) +
+                            "。本相机自身证据较弱，请核对")
+
+
+def _revert(r: dict, why: str) -> None:
+    r.update(corrected=False, changes=[], fix=None, refined=False, delta_deg=None,
+             _chosen={p: dict(v) for p, v in r["_cur"].items()},
+             status="unverified", message=why)
+
+
 class AutoCalib:
-    """数据集级的缓存：(序列, 相机, 是否时间同步) -> 校验结果。"""
+    """数据集级的缓存：(序列, 是否时间同步) -> {相机: 校验结果}；用户的确认在取结果时叠加。"""
 
     def __init__(self, ds):
         self.ds = ds
-        self._cache: dict[tuple, dict] = {}
+        self._groups: dict[tuple, dict[str, dict]] = {}
+        self._fps: dict[tuple, str | None] = {}
         self._locks: dict[tuple, threading.Lock] = {}
         self._lock = threading.Lock()
 
-    def get(self, sequence: str, cam: str, sync: bool = True) -> dict:
-        key = (sequence, cam, bool(sync))
+    def _cams(self, sequence: str) -> list[str]:
+        return list(dict.fromkeys(c for r in self.ds.frames if r.sequence == sequence for c in r.cameras))
+
+    def _group(self, sequence: str, sync: bool) -> dict[str, dict]:
+        key = (sequence, bool(sync))
         with self._lock:
-            if key in self._cache:
-                return self._cache[key]
+            if key in self._groups:
+                return self._groups[key]
             lk = self._locks.setdefault(key, threading.Lock())
         with lk:
             with self._lock:
-                if key in self._cache:
-                    return self._cache[key]
-            r = solve(self.ds, sequence, cam, sync)
+                if key in self._groups:
+                    return self._groups[key]
+            cams = self._cams(sequence)
+            with ThreadPoolExecutor(min(GROUP_WORKERS, max(1, len(cams)))) as ex:
+                res = dict(zip(cams, ex.map(lambda c: solve(self.ds, sequence, c, sync), cams)))
+            harmonize(res)
             with self._lock:
-                self._cache[key] = r
-            return r
+                self._groups[key] = res
+            return res
+
+    def fingerprint(self, sequence: str, cam: str) -> str | None:
+        key = (sequence, cam)
+        if key not in self._fps:
+            idx = next((i for i, r in enumerate(self.ds.frames) if r.sequence == sequence and cam in r.cameras), None)
+            try:
+                self._fps[key] = fingerprint(self.ds.get_frame(idx), cam) if idx is not None else None
+            except Exception:  # noqa: BLE001
+                self._fps[key] = None
+        return self._fps[key]
+
+    def automatic(self, sequence: str, cam: str, sync: bool = True) -> dict:
+        g = self._group(sequence, sync)
+        if cam not in g:
+            g[cam] = solve(self.ds, sequence, cam, sync)
+        return g[cam]
+
+    def get(self, sequence: str, cam: str, sync: bool = True) -> dict:
+        dec = getattr(self.ds, "decisions", None)
+        rec = dec.get(self.fingerprint(sequence, cam)) if dec is not None else None
+        if rec and rec["action"] in ("confirm", "keep_original"):
+            fix = rec.get("fix") if rec["action"] == "confirm" else None
+            where = "你在本批次" if rec["origin"] == "batch" else f"沿用你在批次「{rec.get('batch') or '?'}」中"
+            what = "确认的投影（含当时的自动修正）" if fix else "确认的原始外参"
+            return {"sequence": sequence, "camera": cam, "status": "confirmed", "corrected": bool(fix),
+                    "refined": bool(fix and fix.get("delta_deg")), "method": None, "frames_used": [],
+                    "changes": [], "delta_deg": (fix or {}).get("delta_deg"), "fix": fix, "problems": [],
+                    "score": None, "decision": rec,
+                    "message": f"{where}{rec.get('time', '')} {what}"
+                               + ("（同一套标定：内参、外参原始数值完全相同）" if rec["origin"] == "library" else "")}
+        r = dict(self.automatic(sequence, cam, sync))
+        if rec and rec["action"] == "show_anyway":
+            r["show_anyway"] = True
+            r["decision"] = rec
+            r["message"] += "；你选择了仍然显示 3D 投影（可能不准）"
+        return r
 
     def results(self) -> list[dict]:
         with self._lock:
-            return list(self._cache.values())
+            keys = [(seq, cam, sync) for (seq, sync), g in self._groups.items() for cam in g]
+        return [self.get(seq, cam, sync) for seq, cam, sync in keys]
 
 
 _lock = threading.Lock()
@@ -283,5 +409,8 @@ def public(r: dict | None) -> dict | None:
     if r is None:
         return None
     keys = ("status", "corrected", "refined", "method", "frames_used", "changes", "delta_deg", "message", "score",
-            "problems")
-    return {k: r.get(k) for k in keys} | {"title": STATUS_TEXT.get(r["status"], r["status"])}
+            "problems", "conflict", "show_anyway", "overruled")
+    out = {k: r.get(k) for k in keys} | {"title": STATUS_TEXT.get(r["status"], r["status"])}
+    rec = r.get("decision")
+    out["decision"] = {k: rec.get(k) for k in ("action", "origin", "batch", "time")} if rec else None
+    return out

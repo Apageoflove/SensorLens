@@ -196,6 +196,9 @@ function onSession(s, keepView = false) {
   const prevIdx = S.idx, prevCam = S.cam;
   S.sid = s.session_id; S.frames = s.frames; S.cats = s.categories || []; S.source = s.source || null;
   history.replaceState(null, "", "?s=" + S.sid);
+  S.batchName = s.name || "";
+  document.title = s.name ? `${s.name} - SensorLens` : "SensorLens";
+  loadBatches();
   document.body.classList.toggle("has-data", s.frames.length > 0);
   setBusy(false);
   const nSeq = new Set(s.frames.map((f) => f.sequence)).size;
@@ -309,10 +312,11 @@ async function loadView(fit) {
            (ov.has_intrinsic ? "" : "  [无内参，仅 2D]") + sizeWarn, sizeWarn ? "warn" : "muted");
     const msgs = [];
     const c = ov.calib;
-    if (c) msgs.push(`<div class="calib v-${CALIB_CLASS[c.status] || "unknown"}">【${esc(c.title)}】${esc(c.message)}</div>`);
+    if (c) msgs.push(`<div class="calib v-${CALIB_CLASS[c.status] || "unknown"}">【${esc(c.title)}】${esc(c.message)}</div>` + decisionButtons(c, S.cam));
     msgs.push(...ov.warnings.filter((w) => !c || w !== c.message).map((w) => `<div class="warn">${esc(w)}</div>`));
     msgs.push(...(ov.notes || []).map((n) => `<div class="muted">· ${esc(n)}</div>`));
     $("#panel").innerHTML = msgs.join("");
+    bindDecisions($("#panel"), () => loadView(false));
   } catch (e) {
     if (id === S.reqId) {
       clearView(); status("加载失败: " + e.message, "err");
@@ -321,7 +325,104 @@ async function loadView(fit) {
   }
 }
 
-const CALIB_CLASS = { verified: "ok", unverified: "uncertain", suspect: "suspect", unchecked: "unknown" };
+const CALIB_CLASS = { verified: "ok", unverified: "uncertain", suspect: "suspect", unchecked: "unknown", confirmed: "ok" };
+
+// ---------------- 人工确认 ----------------
+function decisionButtons(c, cam, seq) {
+  const d = c.decision, b = (act, txt, tip) => `<button class="mini" data-act="${act}" data-cam="${esc(cam)}" data-seq="${esc(seq ?? S.frames[S.idx].sequence)}" title="${esc(tip)}">${txt}</button>`;
+  const out = [];
+  if (c.status !== "confirmed") {
+    out.push(b("confirm", "投影正确，确认", "记住当前显示的投影（含自动修正）。同一套标定的其他批次自动沿用"));
+    if (c.corrected || c.refined) out.push(b("keep_original", "不要自动修正", "原始外参才是对的。同一套标定的其他批次也按原外参显示"));
+    if (c.status === "suspect" && !c.show_anyway) out.push(b("show_anyway", "仍然显示 3D", "只在本批次生效，不写入标定库"));
+  }
+  if (d) out.push(d.origin === "library" ? b("auto", "不沿用", "本批次不沿用其他批次的确认，重新自动判断")
+                                          : b("clear", "撤销", "撤销你在本批次的决定"));
+  return out.length ? `<div class="decide">${out.join("")}</div>` : "";
+}
+function bindDecisions(root, after) {
+  for (const btn of root.querySelectorAll(".decide button")) {
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        await jpost(`/api/sessions/${S.sid}/calib/${encodeURIComponent(btn.dataset.cam)}`, "POST",
+                    { action: btn.dataset.act, sequence: btn.dataset.seq, sync: $("#sync").checked });
+        status({ confirm: "已确认，以后同一套标定自动沿用", keep_original: "已记住：按原始外参显示", show_anyway: "本批次仍显示 3D 投影",
+                 clear: "已撤销", auto: "本批次改为自动判断" }[btn.dataset.act] || "已保存", "ok");
+        loadBatches();
+        after();
+      } catch (e) { status("保存失败: " + e.message, "err"); btn.disabled = false; }
+    };
+  }
+}
+async function showCalibAll() {
+  status("正在判断整批相机，首次需要一些时间…");
+  try {
+    const seq = S.frames[S.idx].sequence;
+    const r = await (await api(`/api/sessions/${S.sid}/calib?sequence=${encodeURIComponent(seq)}&sync=${$("#sync").checked}`)).json();
+    const rows = r.cameras.map((c) => `<tr><td><a href="#" class="goCam" data-c="${esc(c.camera)}">${esc(c.camera)}</a></td>
+      <td class="v-${CALIB_CLASS[c.status] || "unknown"}">${esc(c.title)}${c.conflict ? "（有分歧）" : ""}${c.overruled ? "（按整批）" : ""}</td>
+      <td>${esc(c.message)}</td><td>${decisionButtons(c, c.camera, c.sequence)}</td></tr>`).join("");
+    const cnt = {}; r.cameras.forEach((c) => { cnt[c.title] = (cnt[c.title] || 0) + 1; });
+    $("#panel").innerHTML = `<p>序列 ${esc(seq || "(默认)")} 共 ${r.cameras.length} 台相机：${Object.entries(cnt).map(([k, v]) => `${esc(k)} ${v}`).join("，")}。
+      点相机名查看投影，确认后会记住。</p><table class="calibtbl"><tr><th>相机</th><th>结论</th><th>说明</th><th>操作</th></tr>${rows}</table>`;
+    for (const a of document.querySelectorAll("#panel .goCam")) a.onclick = (e) => { e.preventDefault(); S.cam = a.dataset.c; $("#camera").value = a.dataset.c; showTab("cam"); loadView(true); };
+    bindDecisions($("#panel"), showCalibAll);
+    status("整批相机结论已更新");
+  } catch (e) { status("获取失败: " + e.message, "err"); }
+}
+
+// ---------------- 批次目录 ----------------
+const KIND_TXT = { upload: "上传", local: "本机目录", archive: "压缩包", sample: "示例" };
+async function loadBatches() {
+  try {
+    const r = await (await api("/api/batches")).json();
+    S.batches = r.batches;
+    $("#sumBatches").textContent = r.batches.length ? `${r.batches.length} 批` : "";
+    renderBatches();
+  } catch (_) { $("#batchList").textContent = ""; }
+}
+function renderBatches() {
+  const q = ($("#batchFilter").value || "").trim().toLowerCase();
+  const list = (S.batches || []).filter((b) => !q || b.name.toLowerCase().includes(q));
+  if (!list.length) { $("#batchList").innerHTML = `<span class="muted">${q ? "没有匹配的批次" : "还没有批次。上传或打开数据后会出现在这里"}</span>`; return; }
+  $("#batchList").innerHTML = list.map((b) => `<div class="batch${b.id === S.sid ? " cur" : ""}${b.available ? "" : " gone"}" data-id="${b.id}">
+    <div class="bname" title="${esc(b.location)}">${esc(b.name)}</div>
+    <div class="bmeta">${esc(KIND_TXT[b.kind] || b.kind)} · ${b.stats.frames ?? "?"} 帧${b.stats.cameras ? " · " + b.stats.cameras.length + " 相机" : ""}${b.decisions ? " · 已确认 " + b.decisions : ""}${b.available ? "" : " · <b class='err'>数据位置不存在</b>"}</div>
+    <div class="bact">${b.id === S.sid ? "<span class='muted'>当前</span>" : `<a href="#" data-a="open">打开</a>`}<a href="#" data-a="rename">改名</a>${b.copied ? "" : `<a href="#" data-a="move">位置</a>`}<a href="#" data-a="reveal">文件夹</a><a href="#" data-a="del">删除</a></div></div>`).join("");
+  for (const el of document.querySelectorAll("#batchList .batch")) {
+    const b = S.batches.find((x) => x.id === el.dataset.id);
+    for (const a of el.querySelectorAll("a[data-a]")) a.onclick = (e) => { e.preventDefault(); batchAction(b, a.dataset.a); };
+  }
+}
+const jpost = (url, method, body) => api(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+async function batchAction(b, act) {
+  try {
+    if (act === "open") {
+      status(`打开批次 ${b.name}…`);
+      onSession(await (await api(`/api/sessions/${b.id}`)).json());
+    } else if (act === "rename") {
+      const name = prompt("批次名称", b.name);
+      if (!name || name === b.name) return;
+      await jpost(`/api/batches/${b.id}`, "PATCH", { name });
+      if (b.id === S.sid) { S.batchName = name; document.title = `${name} - SensorLens`; }
+    } else if (act === "move") {
+      const loc = prompt("数据被移动后，在这里填新的完整路径", b.location);
+      if (!loc || loc === b.location) return;
+      await jpost(`/api/batches/${b.id}`, "PATCH", { location: loc });
+    } else if (act === "reveal") {
+      await jpost(`/api/batches/${b.id}/reveal`, "POST");
+    } else if (act === "del") {
+      const what = b.copied ? "会删除软件里保存的这批数据副本和确认记录" : "只删除批次记录和确认记录，不会动你本机的原始数据";
+      if (!confirm(`删除批次「${b.name}」？${what}。`)) return;
+      await api(`/api/sessions/${b.id}`, { method: "DELETE" });
+      if (b.id === S.sid) { history.replaceState(null, "", "/"); location.reload(); return; }
+    }
+    loadBatches();
+  } catch (e) { status("操作失败: " + e.message, "err"); }
+}
+$("#batchFilter").oninput = renderBatches;
+$("#btnCalibAll").onclick = showCalibAll;
 function buildBins() {
   const p = S.ov.points;
   S.bins = Array.from({ length: NBINS }, () => []);
@@ -1089,6 +1190,7 @@ async function initDesktop() {
 // ---------------- 启动 ----------------
 loadAdapters();
 loadSamples();
+loadBatches();
 initDesktop();
 const sid = new URLSearchParams(location.search).get("s");
 if (sid) {
