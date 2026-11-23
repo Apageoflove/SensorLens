@@ -21,14 +21,14 @@ from pathlib import Path
 
 import numpy as np
 
-from . import automap
+from . import annframe, automap, rig
 from .adapter import apply_adapter, detect, looks_canonical
 from .integrity import ImageChecker, ImageCorrupt, ZipCopies
 from .motion import Trajectory
 from .pointcloud import load_points_ex
 from .schema import Frame, SchemaError, iter_named, normalize_doc, parse_frame, sensor_names
 
-INDEX_VERSION = 6
+INDEX_VERSION = 8
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 POINTS_EXT = (".bin", ".pcd", ".ply", ".npy")
 DATA_EXT = IMAGE_EXT + POINTS_EXT + (".json",)
@@ -36,6 +36,8 @@ PARALLEL_MIN_JSON = 400
 # 单帧 JSON 一般几 KB 到几 MB；再大的多半是整个数据集的元数据表（如 nuScenes 的 sample_data.json），
 # 整个读进内存会卡死甚至耗尽内存
 MAX_FRAME_JSON = 64 * 1024 * 1024
+CALIB_PATH = re.compile(r"(^|/)[^/]*(calib|param|intrinsic|extrinsic)[^/]*/|calib[^/]*\.json$", re.I)
+MAX_CALIB_FILES = 4000
 JUNK_DIRS = {"__MACOSX", "__pycache__", "node_modules", "$RECYCLE.BIN", "System Volume Information", "venv"}
 JUNK_FILES = {"thumbs.db", "desktop.ini"}
 
@@ -403,7 +405,12 @@ class Dataset:
         self._inferred: dict[str, dict | None] = {}
         self._infer_lock = threading.Lock()
         self._calib: dict[str, list[dict]] | None = None
+        self._rig_list: list | None = None
         self._sizes: dict[str, tuple[int, int]] = {}
+        self._ann_yaw: float | None = None
+        self._ann_yaw_done = False
+        self._clouds_in_ann: set[str] = set()
+        self._ann_yaw_lock = threading.Lock()
         self.skipped: list[tuple[str, str]] = []
         self.index_info: dict = {}
         if index is not None:
@@ -451,7 +458,16 @@ class Dataset:
         hits = self._by_base.get(posixpath.basename(path).lower(), [])
         if prefix:
             hits = [h for h in hits if h.startswith(prefix)]
-        return hits[0] if len(hits) == 1 else None
+        if len(hits) <= 1:
+            return hits[0] if hits else None
+        # 路径前缀对不上（s3:// 地址、采集机上的绝对路径、多一层上级目录）时，按最长的公共后缀确定唯一的文件
+        parts = [p for p in rel.lower().split("/") if p and p != ".."]
+        for k in range(len(parts), 1, -1):
+            suf = "/".join(parts[-k:])
+            m = [h for h in hits if h.lower() == suf or h.lower().endswith("/" + suf)]
+            if m:
+                return m[0] if len(m) == 1 else None
+        return None
 
     # ---------- JSON 与索引 ----------
     def _raw_json(self, name: str, depth: int = 0) -> dict:
@@ -533,7 +549,10 @@ class Dataset:
             return self._calib
         out: dict[str, list[dict]] = {}
         if self.adapter_name == "auto" and self.virtual is None:
-            for n in self._sample_names():
+            # 抽样之外，路径像标定目录的小 JSON 全部读一遍：每个 clip（甚至每帧）一套标定的数据里标定文件很多
+            extra = [n for n in self._json_names() if CALIB_PATH.search(n) and (
+                not hasattr(self.store, "size") or self.store.size(n) <= 256 * 1024)][:MAX_CALIB_FILES]
+            for n in dict.fromkeys(self._sample_names() + extra):
                 d = self._peek(n)
                 if d is None or looks_canonical(d) or any(detect(d, a) for a in self.adapters.values()) \
                         or automap.is_coco(d):
@@ -545,6 +564,66 @@ class Dataset:
                         out[n] = cams
         self._calib = out
         return out
+
+    def rigs(self) -> list:
+        if self._rig_list is None:
+            self._rig_list = rig.build_rigs(self._calib_map(), self.images, self.pointclouds) \
+                if self.adapter_name == "auto" and self.virtual is None else []
+        return self._rig_list
+
+    def _attach_rig(self, docs: list[dict], name: str) -> list[dict]:
+        """帧 JSON 里没有标定的相机时，按目录结构和时间戳补上同一 clip 的标定和图片（见 rig 模块）。"""
+        rg = rig.rig_for(self.rigs(), name)
+        if rg is None:
+            return docs
+        out = []
+        for doc in docs:
+            doc = normalize_doc(doc)
+            if not isinstance(doc, dict):
+                out.append(doc)
+                continue
+            cams = [c for _, c in iter_named(doc.get("cameras"))]
+            if any(c.get("intrinsic", c.get("K", c.get("intrinsics"))) is not None for c in cams):
+                out.append(doc)
+                continue
+            t = rig.to_seconds_auto(doc.get("timestamp")) or rig.stamp_of(name)
+            new = rg.cameras_at(t)
+            if not new:
+                out.append(doc)
+                continue
+            doc = dict(doc, cameras=new)
+            lids = [c for _, c in iter_named(doc.get("lidars"))]
+            base = posixpath.dirname(name)
+            if not any(self.resolve(str(c.get("path") or ""), base) for c in lids):
+                cloud = rg.cloud_at(t)
+                if cloud:
+                    doc["lidars"] = [cloud]
+            doc.setdefault("sequence", rg.scope)
+            out.append(doc)
+        return out
+
+    def _rig_frames(self) -> list[FrameRef]:
+        """没有逐帧 JSON、只有标定和按相机分目录的图片时，以图片最多的相机为基准，每个时刻一帧。"""
+        refs = []
+        for i, rg in enumerate(self.rigs()):
+            for t in rg.reference_times():
+                cams = rg.cameras_at(t)
+                if not cams:
+                    continue
+                cloud = rg.cloud_at(t)
+                refs.append(FrameRef(f"{RIG_FRAME}{i}:{t!r}", 0, f"{t:.6f}", [c["name"] for c in cams],
+                                     [cloud["name"]] if cloud else [], rg.scope, t))
+        return refs
+
+    def _rig_doc(self, key: str) -> dict:
+        i, t = key.split(":", 1)
+        rg = self.rigs()[int(i)]
+        t = float(t)
+        doc = {"frame_id": f"{t:.6f}", "timestamp": t, "sequence": rg.scope, "cameras": rg.cameras_at(t)}
+        cloud = rg.cloud_at(t)
+        if cloud:
+            doc["lidars"] = [cloud]
+        return doc
 
     def _merge_calib(self, docs: list[dict], name: str) -> list[dict]:
         cm = self._calib_map()
@@ -635,6 +714,8 @@ class Dataset:
         def load():
             if name.startswith(IMAGE_FRAME):
                 return [_image_frame_doc(name[len(IMAGE_FRAME):])]
+            if name.startswith(RIG_FRAME):
+                return [self._rig_doc(name[len(RIG_FRAME):])]
             if self.virtual is not None and name.startswith(self.virtual.prefix):
                 return [self.virtual.doc(int(name[len(self.virtual.prefix):]))]
             doc = self._raw_json(name)
@@ -645,7 +726,7 @@ class Dataset:
                 return [doc]
             docs = apply_adapter(doc, ad)
             if ad.get("inferred") and automap.role(ad) == "frames":
-                docs = self._merge_calib(docs, name)
+                docs = self._merge_calib(self._attach_rig(docs, name), name)
             return docs
         return self._docs.get(name, load)
 
@@ -681,6 +762,21 @@ class Dataset:
             os.replace(tmp, p)
         return refs
 
+    def _drop_dangling(self, refs: list[FrameRef]) -> list[FrameRef]:
+        """去掉展开成大量“帧”、但图片一张都不在也没有雷达的 JSON（如拷图日志、问题图片清单），前提是别的 JSON 有可用的帧。"""
+        def dead(r: FrameRef) -> bool:
+            return bool(r.cameras) and not r.lidars and set(r.missing) >= set(r.cameras)
+        by_json: dict[str, list[FrameRef]] = {}
+        for r in refs:
+            by_json.setdefault(r.json_name, []).append(r)
+        # 只对一个文件展开成很多“帧”的清单类 JSON 生效；单帧 JSON 缺图仍按缺图报告
+        bad = {j for j, rs in by_json.items() if len(rs) >= 20 and all(dead(r) for r in rs)}
+        if not bad or len(bad) == len(by_json):
+            return refs
+        for j in sorted(bad):
+            self.skipped.append((j, f"{len(by_json[j])} 帧引用的图片都不在数据里，也没有点云，像是清单或日志，未作为帧"))
+        return [r for r in refs if r.json_name not in bad]
+
     def _index(self, only: list[str] | None, workers: int | None) -> list[FrameRef]:
         jsons = [n for n in self.store.names() if n.lower().endswith(".json")]
         if only is not None:
@@ -711,9 +807,14 @@ class Dataset:
             self.skipped.extend(tuple(s) for s in it["skipped"])
             refs.extend(FrameRef(**r) for r in it["frames"])
             used.update(it["used"])
+        refs = self._drop_dangling(refs)
         if not refs and only is None and self.images:
-            refs = _image_frames(self.images)
-            self.index_info["image_only"] = True
+            refs = self._rig_frames()
+            if refs:
+                self.index_info["rig_only"] = True
+            else:
+                refs = _image_frames(self.images)
+                self.index_info["image_only"] = True
         else:
             unused = [n for n in self.images if n not in used]
             if unused:
@@ -727,17 +828,86 @@ class Dataset:
     def get_frame(self, idx: int) -> Frame:
         if not 0 <= idx < len(self.frames):
             raise IndexError(f"帧序号 {idx} 越界，共 {len(self.frames)} 帧")
-        ref = self.frames[idx]
 
         def load():
-            d = self._canonical(ref.json_name)[ref.sub]
-            base = "" if ref.json_name.startswith("@") else posixpath.dirname(ref.json_name)
-            d = self.with_sizes(d, base, ref.json_name)
-            f = parse_frame(d, source=ref.json_name, base_dir=base)
-            f.frame_id = f.frame_id or ref.frame_id
-            f.sequence = ref.sequence
+            f = self._parse_frame(idx)
+            yaw = self.annotation_yaw()
+            R = annframe.rot_z(yaw or 0)
+            if yaw:
+                for a in f.annotations:
+                    if a.frame == "ego" and a.points.ndim == 2 and a.points.shape[1] == 3:
+                        a.points = a.points @ R.T
+            for name in self._clouds_in_ann & set(f.lidars):
+                T = np.eye(4)
+                T[:3, :3] = R
+                f.lidars[name].T_parent_sensor, f.lidars[name].parent = T, "ego"
             return f
         return self._frames.get(idx, load)
+
+    def _parse_frame(self, idx: int) -> Frame:
+        ref = self.frames[idx]
+        d = self._canonical(ref.json_name)[ref.sub]
+        base = "" if ref.json_name.startswith("@") else posixpath.dirname(ref.json_name)
+        d = self.with_sizes(d, base, ref.json_name)
+        f = parse_frame(d, source=ref.json_name, base_dir=base)
+        f.frame_id = f.frame_id or ref.frame_id
+        f.sequence = ref.sequence
+        return f
+
+    def annotation_yaw(self, samples: int = 10) -> float | None:
+        """自车系 3D 标注实际的轴约定与自车系差的转角（绕 z），用几帧点云验证；没证据或不需要转时为 None。
+
+        同时找出“已经在标注坐标系里”的点云（如拼接后的 merge.pcd）：原样就能套上框的，不再乘该雷达的外参。
+        """
+        if self._ann_yaw_done or self.virtual is not None:
+            return self._ann_yaw
+        with self._ann_yaw_lock:
+            if self._ann_yaw_done:
+                return self._ann_yaw
+            sensor_hits: dict[str, dict[int, int]] = {}
+            raw_hits: dict[str, int] = {}
+            cand = [i for i, r in enumerate(self.frames) if r.lidars]
+            n = len(cand)
+            for idx in sorted({cand[int(i)] for i in np.linspace(0, n - 1, min(samples, n))}) if n else []:
+                try:
+                    f = self._parse_frame(idx)
+                except Exception:
+                    continue
+                boxes = [a.points for a in f.annotations if a.kind == "box3d" and a.frame == "ego"]
+                if len(boxes) < 2:
+                    continue
+                g, seen = f.graph(), set()
+                for name in f.lidars:
+                    try:
+                        fname = self.lidar_name(f, name)
+                        if fname in seen:
+                            continue
+                        seen.add(fname)
+                        T = g.get("ego", name)
+                        pts = self.load_lidar(f, name)[:, :3]
+                    except Exception:
+                        continue
+                    raw_hits[name] = raw_hits.get(name, 0) + annframe.boxes_hit(boxes, annframe.subsample(pts))
+                    h = sensor_hits.setdefault(name, {})
+                    for y, k in annframe.yaw_hits(boxes, pts @ T[:3, :3].T + T[:3, 3]).items():
+                        h[y] = h.get(y, 0) + k
+            in_ann = {nm for nm, r in raw_hits.items() if annframe.prefer_raw(r, sensor_hits[nm])}
+            total: dict[int, int] = {}
+            for nm, h in sensor_hits.items():
+                if nm not in in_ann:
+                    for y, k in h.items():
+                        total[y] = total.get(y, 0) + k
+            yaw = annframe.decide(total) if total else None
+            if yaw:
+                self.index_info["annotation_yaw"] = {
+                    "yaw_deg": yaw, "hits": total,
+                    "message": f"3D 标注写的是自车系，但框与点云对不上；绕 z 轴转 {yaw}° 后对上了"
+                               f"（{total[yaw]} 个框里有点，不转时 {total[0]} 个），已按此显示"}
+            if in_ann:
+                self.index_info["clouds_in_annotation_frame"] = sorted(in_ann)
+            self._clouds_in_ann = in_ann
+            self._ann_yaw, self._ann_yaw_done = yaw, True
+            return yaw
 
     def trajectory(self, sequence: str) -> Trajectory:
         """同一序列所有帧（含传感器级）的位姿样本组成的轨迹，用于时间插值。"""
@@ -826,6 +996,7 @@ class Dataset:
 
 
 IMAGE_FRAME = "@image:"
+RIG_FRAME = "@rig:"
 
 
 def _image_frame_doc(key: str) -> dict:

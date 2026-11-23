@@ -20,7 +20,7 @@ from collections import Counter
 import numpy as np
 
 from .adapter import _section, apply_fields, iter_items
-from .schema import SchemaError, parse_frame
+from .schema import DEFAULT_CONVENTIONS, SchemaError, merge_conventions, parse_frame, parse_transform
 
 IMG_RE = re.compile(r"\.(jpe?g|png|bmp|webp)$", re.I)
 PC_RE = re.compile(r"\.(bin|pcd|ply|npy)$", re.I)
@@ -40,7 +40,8 @@ INTR_KEYS = ("intrinsic", "intrinsics", "k", "camerak", "camk", "intrinsicmatrix
 WIDTH_KEYS = ("width", "imagewidth", "imgwidth", "imw", "w")
 HEIGHT_KEYS = ("height", "imageheight", "imgheight", "imh", "h")
 DIST_KEYS = ("distortion", "distortioncoeffs", "distortioncoefficients", "distcoeffs", "distcoeff", "dist", "d",
-             "distortionparams", "distortioncoef", "distortionparameters")
+             "distortionparams", "distortioncoef", "distortionparameters", "camdist", "camdistortion",
+             "cameradistortion", "distortioncoefficient")
 MODEL_KEYS = ("cameramodel", "distortionmodel", "model", "projectionmodel", "cameratype", "lenstype")
 TS_KEYS = ("timestamp", "timestampus", "timestampns", "timestampms", "ts", "stamp", "time", "timeus", "unixtime")
 FRAME_ID_KEYS = ("frameid", "frame", "frameidx", "frameindex", "framename", "sampletoken", "sampleidx", "sampleid",
@@ -62,7 +63,8 @@ FLAT3D_KEYS = ("box3d", "bbox3d", "box", "boxes3d", "cuboid", "gtbox", "lidarbox
 BBOX_KEYS = ("bbox", "bbox2d", "box2d", "2dbox", "box", "rect", "rectangle", "bndbox", "boundingbox", "xyxy", "xywh",
              "ltrb", "ltwh", "roi", "imagebox")
 POINTS_KEYS = ("points", "pts", "vertices", "vertex", "coords", "coordinates", "polyline", "polygon", "line",
-               "points3d", "pts3d", "points2d", "pts2d", "keypoints", "contour", "lane", "nodes", "xyz", "uv")
+               "points3d", "pts3d", "points2d", "pts2d", "keypoints", "contour", "lane", "nodes", "xyz", "uv", "geo3d",
+               "geometry3d", "polyline3d", "line3d", "lanepoints", "linepoints")
 RECT_KEYS = ("r0rect", "rrect", "r0", "rect", "rectification", "rectrotation")
 _ROT_IN = ("rotation", "quaternion", "quat", "q", "r", "rot", "orientation", "rotationmatrix", "rotmat", "euler", "rpy")
 _TRANS_IN = ("translation", "t", "position", "pos", "trans", "xyz", "offset", "location")
@@ -1069,6 +1071,7 @@ class _Inference:
                         sec["fields"]["frame"] = "=" + self.lidar_names[0]
                 sec["fields"]["type"] = "=" + kind
                 meta["line_kind"] = kind
+        self._camera_directions()
         drop = [s for s, m in self._ann_meta if m.get("drop")]
         drop = [s for s in drop if s in self.adapter.get("annotations", [])]
         if drop:
@@ -1077,6 +1080,35 @@ class _Inference:
                 if m.get("drop"):
                     self.notes.append(f"{m['items']}：{m['drop']}，已忽略")
             self._ann_meta = [(s, m) for s, m in self._ann_meta if not m.get("drop")]
+
+    def _camera_directions(self) -> None:
+        """字段名看不出方向的相机外参，按相机的“下”方向判断：父系（自车 / 雷达）z 轴朝上，
+        相机光学系 y 轴朝下，正确的方向下相机 y 轴在父系里应明显朝下。两种读法差别明显时才采用。"""
+        for sec in self.adapter.get("cameras", []):
+            ext = sec["fields"].get("extrinsic")
+            if not isinstance(ext, dict) or "direction" in ext or "chain" in ext:
+                continue
+            down_fwd, down_inv = [], []
+            for c in self._section_values(sec)[:40]:
+                try:
+                    T = parse_transform(c.get("extrinsic"), merge_conventions(DEFAULT_CONVENTIONS, self.conv))
+                except (SchemaError, ValueError, TypeError, KeyError):
+                    continue
+                R = T[:3, :3]
+                down_fwd.append(-R[2, 1])
+                down_inv.append(-R[1, 2])
+            if len(down_fwd) == 0:
+                continue
+            a, b = float(np.mean(down_fwd)), float(np.mean(down_inv))
+            if b - a > 0.5 and b > 0.3:
+                ext["direction"] = "=parent_to_sensor"
+                for i, (e, p, r) in enumerate(self._ext_notes):
+                    if e.get("matrix", e.get("rotation")) == _ext_name(ext):
+                        self._ext_notes[i] = (dict(e, direction="parent_to_sensor", by_axes=True), p, r)
+            elif a - b > 0.5 and a > 0.3:
+                for i, (e, p, r) in enumerate(self._ext_notes):
+                    if e.get("matrix", e.get("rotation")) == _ext_name(ext):
+                        self._ext_notes[i] = (dict(e, direction="sensor_to_parent", by_axes=True), p, r)
 
     # ---------- 解析一遍样本，解析不了的部分去掉并说明 ----------
     def _validate(self) -> None:
@@ -1157,6 +1189,8 @@ class _Inference:
             d = ext.get("direction")
             txt = {"sensor_to_parent": "传感器→" + pname, "parent_to_sensor": pname + "→传感器"}.get(
                 d, "方向读不出，按传感器→父系，打开时用图像自动校验")
+            if ext.get("by_axes"):
+                txt += "（字段名看不出，按相机朝下的轴判断）"
             head.append(f"外参 {ext['name']}：{txt}" + (f"，乘上 {rect}" if rect else ""))
         for s in a.get("lidars", []):
             head.append(f"雷达 {s['items'] or '（帧顶层）'}：点云 {s['fields'].get('path')}")
@@ -1191,6 +1225,11 @@ class _Inference:
                         out.append(v)
                         break
         return sorted(set(out))
+
+
+def _ext_name(spec: dict) -> str | None:
+    v = spec.get("matrix", spec.get("rotation"))
+    return v if isinstance(v, str) else None
 
 
 def _section_one(inf: _Inference, sec, doc) -> list:

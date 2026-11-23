@@ -113,7 +113,8 @@ def _read_pcd(data: bytes, time_field: str | None):
             break
     fields = [f.lower() for f in header["FIELDS"]]
     sizes = [int(s) for s in header.get("SIZE", ["4"] * len(fields))]
-    types = [t.upper() for t in header.get("TYPE", ["F"] * len(fields))]
+    # 有的写出程序把类型写成 U4 / F4（类型字母 + 字节数），只取字母
+    types = [t.upper()[:1] for t in header.get("TYPE", ["F"] * len(fields))]
     counts = [int(c) for c in header.get("COUNT", ["1"] * len(fields))]
     npts = int(header.get("POINTS", [str(int(header["WIDTH"][0]) * int(header.get("HEIGHT", ["1"])[0]))])[0])
     mode = header["DATA"][0].lower()

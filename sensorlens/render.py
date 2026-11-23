@@ -260,16 +260,26 @@ def overlay(ds, frame, cam_name: str, *, lidars: bool = True, annotations: bool 
         res["warnings"].append(f"相机 {cam_name} 缺少{'内参' if cam is None else '外参'}，只能显示 2D 标注")
     calib = for_dataset(ds).get(frame.sequence, cam_name, sync) if (auto_calib and has_3d and can_3d) else None
     res["calib"] = public(calib)
+    if has_3d and ds.annotation_yaw():
+        res["notes"].append(ds.index_info["annotation_yaw"]["message"])
     allow_3d = can_3d and not (calib and calib["status"] == "suspect")
     if can_3d and not allow_3d:
         res["warnings"].append(calib["message"])
     timing = Timing(ds, frame, enabled=sync, overrides=overrides_for(frame, cam_name, calib and calib.get("fix")))
     if allow_3d and lidars and frame.lidars:
         us, vs, zs, vals = [], [], [], []
+        seen, missing = set(), []
         for lname in frame.lidars:
             try:
+                fname = ds.lidar_name(frame, lname)
+                if fname in seen:
+                    continue  # 两个雷达名指向同一个文件（如 perception 与 top_center_lidar），只画一次
+                seen.add(fname)
                 pts = lidar_points(ds, frame, lname, timing)
                 T = timing.T(cam_name, lname)
+            except FileNotFoundError as e:
+                missing.append(f"雷达 {lname}: {e}")
+                continue
             except Exception as e:  # noqa: BLE001
                 res["warnings"].append(f"雷达 {lname}: {e}")
                 continue
@@ -286,6 +296,8 @@ def overlay(ds, frame, cam_name: str, *, lidars: bool = True, annotations: bool 
             else:
                 val = transform_points(timing.g.get("ego", lname), pts[:, :3])[:, 2]
             us.append(uv[valid, 0]); vs.append(uv[valid, 1]); zs.append(z[valid]); vals.append(val[valid])
+        # 已有雷达画出来时，缺文件的其余雷达只是提示（很多数据只发了拼接后的点云）
+        res["notes" if us else "warnings"].extend(missing)
         if us:
             u, v, z, val = (np.concatenate(x) for x in (us, vs, zs, vals))
             if len(u) > max_points:

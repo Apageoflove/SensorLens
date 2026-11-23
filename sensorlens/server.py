@@ -52,7 +52,7 @@ for d in (SESSIONS, TMP):
 # 上传的大文件会先落到临时目录，这里固定到数据目录内，避免写到系统盘。
 tempfile.tempdir = str(TMP)
 
-app = FastAPI(title="SensorLens", version="0.7.1")
+app = FastAPI(title="SensorLens", version="0.8.0")
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
 

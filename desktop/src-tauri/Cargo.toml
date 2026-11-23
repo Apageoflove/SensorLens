@@ -1,6 +1,6 @@
 [package]
 name = "sensorlens"
-version = "0.7.1"
+version = "0.8.0"
 description = "SensorLens 智驾多传感器可视化"
 edition = "2021"
 license = "MIT"

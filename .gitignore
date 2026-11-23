@@ -9,3 +9,5 @@ real_samples/
 *.key.pub
 .env
 env.local.ps1
+# 公司内部数据，只在本机测试，绝不提交
+testdata/

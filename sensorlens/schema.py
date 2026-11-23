@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -274,6 +275,8 @@ def parse_intrinsic(v, what: str = "intrinsic") -> tuple[np.ndarray, np.ndarray 
     return K, make_T(R, t)
 
 
+FISHEYE_NAME = re.compile(r"fish|fov_?(1[5-9]\d|2\d\d)(?!\d)|鱼眼|surround|avm", re.I)
+
 _MODEL_ALIASES = {
     "pinhole": "pinhole", "none": "pinhole", "opencv": "opencv", "radtan": "opencv", "plumb_bob": "opencv",
     "brown": "opencv", "rational_polynomial": "opencv", "fisheye": "fisheye", "kb": "fisheye",
@@ -285,7 +288,7 @@ def parse_distortion(v, cam_spec: dict) -> tuple[str, np.ndarray]:
     model = cam_spec.get("model") or cam_spec.get("camera_model")
     coeffs = []
     if isinstance(v, dict):
-        model = v.get("model", model)
+        model = v.get("model", v.get("type", model))
         coeffs = v.get("coeffs", v.get("params"))
         if coeffs is None:
             keys = ("k1", "k2", "k3", "k4") if _MODEL_ALIASES.get(str(model).lower()) == "fisheye" else (
@@ -294,6 +297,13 @@ def parse_distortion(v, cam_spec: dict) -> tuple[str, np.ndarray]:
     elif v is not None:
         coeffs = v
     coeffs = _arr(coeffs, "distortion").reshape(-1)
+    if model is None and np.any(coeffs != 0) and FISHEYE_NAME.search(str(cam_spec.get("name", ""))):
+        # 没写模型的鱼眼（名字带 fisheye / fov190 这类）：4 个系数就是 KB 的 k1..k4；
+        # 按 OpenCV 14 参数排布存放的（p1 = p2 = 0），k1..k4 在第 0、1、4、5 位
+        if coeffs.size >= 6 and coeffs[2] == 0 and coeffs[3] == 0:
+            coeffs = coeffs[[0, 1, 4, 5]]
+        if coeffs.size == 4:
+            model = "fisheye"
     if model is None:
         model = "opencv" if np.any(coeffs != 0) else "pinhole"
     m = _MODEL_ALIASES.get(str(model).lower())

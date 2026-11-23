@@ -127,6 +127,12 @@ def solve(ds, sequence: str, cam: str, sync: bool = True, frames: list[int] | No
         per_frame_best.append(best_k)
         base_ov.append(ovs)
     rows = [dict(t, key=k, mean=float(np.mean(t["scores"]))) for k, t in table.items() if len(t["scores"]) == len(evs)]
+    if method == "annotation_edges" and _near_symmetric(evs[0].cam_s):
+        # 旋转近似对称（R ≈ R^T，如朝正后方的相机）时，翻转外参方向几乎只改变相机位置，
+        # 只靠标注线与图像边缘的重合度分不清，保留原来的方向（自动识别时已按相机朝下的轴判断过）
+        cs = evs[0].cam_s
+        cur_dir = parse_extrinsic(cs.raw_extrinsic, cs.conventions, True)[2]["extrinsic_direction"]
+        rows = [r for r in rows if (r["force"].get("camera") or {}).get("extrinsic_direction", cur_dir) == cur_dir]
     rows.sort(key=lambda r: (-r["mean"], len(r["changes"])))
     cur = next(r for r in rows if r.get("current"))
     best = rows[0]
@@ -162,6 +168,15 @@ def solve(ds, sequence: str, cam: str, sync: bool = True, frames: list[int] | No
     out["fix"] = fix
     out["message"] = _message(out, method, best, cur)
     return out
+
+
+def _near_symmetric(sensor, max_deg: float = 20.0) -> bool:
+    T = getattr(sensor, "T_parent_sensor", None)
+    if T is None:
+        return False
+    R = np.asarray(T)[:3, :3]
+    c = (np.trace(R @ R) - 1) / 2  # R 与 R^T 之间的夹角：R^T 的逆是 R，所以看 R·R 的转角
+    return math.degrees(math.acos(max(-1.0, min(1.0, c)))) < max_deg
 
 
 def _refine(evs: list[Evidence], base: list[dict], cam: str):
